@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = "~/.meu-agente/dados.sqlite"
+DB_PATH = "~/meu-agente/dados.sqlite"
 
 
 def _db():

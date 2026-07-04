@@ -11,10 +11,10 @@ EVOLUTION_API_KEY = "your-api-key"  # substituído pelo install_evolution.py se 
 
 def _get_api_key():
     """Lê apikey do .env gerado pelo install_evolution.py, se existir."""
-    env_file = Path.home() / ".openclaw" / "evolution-api" / ".env"
+    env_file = Path.home() / "meu-agente" / "evolution-api" / ".env"
     if env_file.exists():
         for line in env_file.read_text().splitlines():
-            if line.startswith("AUTHENTICATION_API_KEY="):
+            if line.startswith("API_KEY="):
                 return line.split("=", 1)[1].strip().strip('"')
     # Fallback: tenta a apikey padrão da instalação existente
     return EVOLUTION_API_KEY

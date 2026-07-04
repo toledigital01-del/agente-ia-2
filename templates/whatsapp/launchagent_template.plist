@@ -3,12 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.zxlab.meu-agente-watcher</string>
+    <string>com.meuagente.watcher</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/python3</string>
-        <string>/Users/rcastrodigital/meu-agente/watcher.py</string>
+        <string>{{HOME}}/meu-agente/watcher.py</string>
     </array>
 
     <key>RunAtLoad</key>
@@ -18,10 +18,10 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/rcastrodigital/.zxlab-mission-control/logs/meu-agente-watcher.log</string>
+    <string>{{HOME}}/meu-agente/watcher.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/rcastrodigital/.zxlab-mission-control/logs/meu-agente-watcher-error.log</string>
+    <string>{{HOME}}/meu-agente/watcher-error.log</string>
 
     <key>StartInterval</key>
     <integer>60</integer>

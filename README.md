@@ -33,7 +33,7 @@ O Claude abre automaticamente e conduz o setup por você — sem mais nenhum com
 ```
 Usuário envia trigger
     ↓
-Watcher detecta em ~/.zapi-whatsapp/messages.json
+Watcher detecta via Evolution API (polling a cada 3s)
     ↓
 IA responde (BANT consultivo)
     ↓
@@ -70,8 +70,7 @@ agente-ia-vendas/
 │
 └── docs/
     ├── prerequisitos.md               ← Requisitos por SO
-    ├── troubleshooting.md             ← Problemas comuns
-    └── screenshots/                   ← Imagens do setup
+    └── guia.html                      ← Guia visual do setup
 ```
 
 ## 🎯 Exemplo de Uso
@@ -110,8 +109,7 @@ Para rodas 24/7:
 ## 📚 Documentação
 
 - [Pré-requisitos por SO](docs/prerequisitos.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Como estender o agente](docs/extensoes.md)
+- [Guia visual do setup](docs/guia.html)
 
 ## 💬 Suporte
 

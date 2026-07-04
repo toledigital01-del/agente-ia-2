@@ -119,9 +119,9 @@ Mostre ao usuário apenas: "✅ Criei os arquivos com as configurações do seu 
 Se passar:
 1. Inicie o watcher: `python3 ~/meu-agente/watcher.py &`
 2. Confirme que está rodando
-3. Configure auto-start no macOS:
+3. Configure auto-start no macOS. Leia `templates/whatsapp/launchagent_template.plist`, substitua `{{HOME}}` pelo diretório home do usuário (rode `echo $HOME` para obter) e salve o resultado:
    ```bash
-   cp templates/whatsapp/launchagent_template.plist ~/Library/LaunchAgents/com.meuagente.watcher.plist
+   # depois de substituir {{HOME}} e salvar em ~/Library/LaunchAgents/com.meuagente.watcher.plist:
    launchctl load ~/Library/LaunchAgents/com.meuagente.watcher.plist
    ```
 

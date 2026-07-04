@@ -36,7 +36,7 @@ TRIGGER_KEYWORDS = [
     "saiba mais"
 ]
 
-DB_PATH = "~/.meu-agente/dados.sqlite"
+DB_PATH = "~/meu-agente/dados.sqlite"
 
 
 def is_trigger(text: str) -> bool:

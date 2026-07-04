@@ -2,7 +2,7 @@
 agent_core_template.py — Núcleo da lógica de IA (reutilizável para todos os módulos)
 
 Use este template como base para criar:
-  - ~/.meu-agente/agent.py (módulo WhatsApp)
+  - ~/meu-agente/agent.py (módulo WhatsApp)
   - FastAPI handler /chat (módulo Widget, v1.1+)
 
 Substitua {{placeholders}} com dados do usuário durante setup.
