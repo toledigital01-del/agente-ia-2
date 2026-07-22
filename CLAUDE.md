@@ -7,11 +7,12 @@
 >
 > Deixa eu verificar primeiro se seu computador tem tudo instalado..."
 >
-> Depois dessa mensagem, execute `python3 setup/check_prerequisites.py` imediatamente.
+> Depois dessa mensagem, execute `python setup/check_prerequisites.py` imediatamente.
+> (Em macOS/Linux use `python3` se `python` não funcionar.)
 
 ---
 
-# Agente IA de Vendas — Setup Guiado
+# Agente IA de Vendas — Setup Guiado (v2)
 
 ## REGRAS DE COMPORTAMENTO (leia antes de tudo)
 
@@ -25,25 +26,29 @@ Você é o assistente de setup deste produto. Seu papel é conduzir o usuário d
 5. **Erros são seus** — se der erro, diagnostique e corrija antes de mostrar ao usuário
 6. **Progresso visível** — sempre mostre `[████░░░] Etapa X de 7` no início de cada etapa
 7. **Nunca mostre API keys** completas nos logs ou mensagens
+8. **Windows/macOS/Linux** — use `python` no Windows, `python3` no macOS/Linux
 
 ---
 
 ## Etapa 1 — Verificar Pré-requisitos
 
-**Execute agora:** `python3 setup/check_prerequisites.py`
+**Execute:** `python setup/check_prerequisites.py`
+(Se "python não encontrado", tente: `python3 setup/check_prerequisites.py`)
 
-- Se tudo OK → "✅ Tudo instalado! Posso continuar para o próximo passo?"
-- Se faltar algo → instale automaticamente se possível, ou dê instrução de 1 passo
+- Verifica: Python, Git e Docker (instalado E rodando)
+- Se Docker Desktop não estiver aberto → instrua o usuário a abrir e aguardar o ícone ficar verde
+- Se tudo OK → avance para Etapa 2
 
 ---
 
 ## Etapa 2 — Evolution API (WhatsApp)
 
-**Execute:** `python3 setup/install_evolution.py`
+**Execute:** `python setup/install_evolution.py`
 
-- Se já rodando → "✅ WhatsApp já configurado! Seguindo para o próximo passo..."
-- Se instalar do zero → avise "Isso leva ~3 minutos, pode deixar rodando..." e execute
-- Confirme que está rodando antes de avançar
+- v2: usa imagem Docker oficial (sem clonar repositório) — bem mais rápido
+- API key é salva automaticamente em `~/.meu-agente/config.json`
+- Se já rodando → detecta e avança automaticamente
+- Aguarda até 90s para a API ficar pronta
 
 ---
 
@@ -51,9 +56,13 @@ Você é o assistente de setup deste produto. Seu papel é conduzir o usuário d
 
 Avise o usuário: "Agora vou gerar um QR Code para você escanear com o celular — igual ao WhatsApp Web."
 
-**Execute:** `python3 setup/connect_whatsapp.py`
+**Execute:** `python setup/connect_whatsapp.py`
 
-Após executar, explique onde o QR Code apareceu e aguarde confirmação de que escaneou.
+- v2: exibe QR Code diretamente no terminal (sem precisar de visualizador)
+- Se a biblioteca `qrcode` não estiver instalada, tenta abrir como imagem (Windows/macOS/Linux compatível)
+- Aguarda até 90s pelo scan
+
+Se o usuário precisar reconectar depois: `python setup/reconnect_whatsapp.py`
 
 ---
 
@@ -67,7 +76,7 @@ Pergunte de forma conversacional:
 > **B)** Google Gemini — gratuito até certo limite
 > **C)** Anthropic Claude — mais preciso para vendas"
 
-Peça a API key e execute: `python3 setup/test_api.py --provider X --key Y`
+Peça a API key e execute: `python setup/test_api.py --provider X --key Y`
 
 - Funcionar → confirme e avance
 - Erro 401 → "Essa chave parece incorreta. Pode conferir e colar de novo?"
@@ -106,7 +115,9 @@ Salve os arquivos gerados em:
 - `~/meu-agente/watcher.py`
 - `~/meu-agente/.env`
 
-Crie o diretório se necessário: `mkdir -p ~/meu-agente`
+Leia o `~/.meu-agente/config.json` para preencher `EVOLUTION_API_KEY` e `INSTANCE_NAME` automaticamente.
+
+Crie o diretório se necessário: `mkdir -p ~/meu-agente` (macOS/Linux) ou `mkdir %USERPROFILE%\meu-agente` (Windows)
 
 Mostre ao usuário apenas: "✅ Criei os arquivos com as configurações do seu produto."
 
@@ -114,16 +125,12 @@ Mostre ao usuário apenas: "✅ Criei os arquivos com as configurações do seu 
 
 ## Etapa 7 — Testar e Ativar
 
-**Execute:** `python3 setup/test_agent.py`
+**Execute:** `python setup/test_agent.py`
 
 Se passar:
-1. Inicie o watcher: `python3 ~/meu-agente/watcher.py &`
-2. Confirme que está rodando
-3. Configure auto-start no macOS. Leia `templates/whatsapp/launchagent_template.plist`, substitua `{{HOME}}` pelo diretório home do usuário (rode `echo $HOME` para obter) e salve o resultado:
-   ```bash
-   # depois de substituir {{HOME}} e salvar em ~/Library/LaunchAgents/com.meuagente.watcher.plist:
-   launchctl load ~/Library/LaunchAgents/com.meuagente.watcher.plist
-   ```
+1. Inicie o watcher: `python ~/meu-agente/watcher.py` (mantenha o terminal aberto)
+2. No macOS, configure auto-start. Leia `templates/whatsapp/launchagent_template.plist`, substitua `{{HOME}}` pelo diretório home do usuário e salve como `~/Library/LaunchAgents/com.meuagente.watcher.plist`, depois execute `launchctl load ~/Library/LaunchAgents/com.meuagente.watcher.plist`
+3. No Windows, oriente a manter o terminal aberto ou criar uma tarefa no Agendador de Tarefas do Windows
 
 ---
 
@@ -137,7 +144,7 @@ Ao terminar tudo, mostre exatamente isto:
 ✅ WhatsApp conectado
 ✅ IA configurada ({provider})
 ✅ Produto: {nome_produto}
-✅ Watcher rodando em background
+✅ Watcher rodando
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━
 🔗 Link para divulgar:
@@ -148,4 +155,11 @@ Compartilhe esse link nos seus stories, anúncios e posts.
 Quando alguém clicar, o agente responde automaticamente.
 
 Precisa de algum ajuste no produto ou no comportamento do agente?
+```
+
+## Reconexão (uso futuro)
+
+Se o WhatsApp desconectar (troca de celular, sessão expirada):
+```
+python setup/reconnect_whatsapp.py
 ```

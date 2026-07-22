@@ -1,32 +1,35 @@
 #!/usr/bin/env python3
 """
-connect_whatsapp.py — Conecta número WhatsApp via QR Code
+connect_whatsapp.py — Conecta WhatsApp via QR Code (v2)
+
+Melhorias v2:
+  - Lê API key do config_manager (não de path frágil)
+  - Exibe QR Code no próprio terminal (sem precisar de visualizador externo)
+  - Fallback: salva PNG e abre com o app padrão do sistema (Windows/macOS/Linux)
+  - Detecta reconexão: se já conectado, avisa e sai
 """
 import json
+import sys
 import time
+import base64
+import platform
+import subprocess
+import tempfile
+import urllib.request
+import urllib.error
 from pathlib import Path
 
-# Evolution API local — apikey padrão (definida no docker-compose)
-EVOLUTION_API_KEY = "your-api-key"  # substituído pelo install_evolution.py se necessário
+sys.path.insert(0, str(Path(__file__).parent))
+from config_manager import get as cfg_get, save as cfg_save
 
-def _get_api_key():
-    """Lê apikey do .env gerado pelo install_evolution.py, se existir."""
-    env_file = Path.home() / "meu-agente" / "evolution-api" / ".env"
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.startswith("API_KEY="):
-                return line.split("=", 1)[1].strip().strip('"')
-    # Fallback: tenta a apikey padrão da instalação existente
-    return EVOLUTION_API_KEY
+OS = platform.system()
 
-def call_api(endpoint, method="GET", data=None):
-    """Faz chamada HTTP para Evolution API com apikey obrigatório."""
-    import urllib.request
-    import urllib.error
 
-    url = f"http://localhost:8080{endpoint}"
-    api_key = _get_api_key()
+def call_api(endpoint: str, method: str = "GET", data: dict = None) -> dict:
+    api_key = cfg_get("evolution_api_key", "")
+    evo_url = cfg_get("evolution_url", "http://localhost:8080")
 
+    url = f"{evo_url}{endpoint}"
     headers = {
         "Content-Type": "application/json",
         "apikey": api_key,
@@ -36,96 +39,164 @@ def call_api(endpoint, method="GET", data=None):
         url,
         data=json.dumps(data).encode() if data else None,
         headers=headers,
-        method=method
+        method=method,
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            return json.loads(response.read())
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return {"error": f"HTTP {e.code}", "detail": body}
     except Exception as e:
         return {"error": str(e)}
 
-def main():
+
+def get_connection_state(instance: str) -> str:
+    result = call_api(f"/instance/connectionState/{instance}")
+    return (
+        result.get("instance", {}).get("state")
+        or result.get("state")
+        or "unknown"
+    )
+
+
+def show_qr_terminal(qr_data: str):
+    """Tenta exibir QR Code no terminal via biblioteca qrcode."""
+    raw = qr_data.split(",")[-1]
+    try:
+        import qrcode
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(raw if len(raw) < 100 else base64.b64decode(raw).decode())
+        qr.make(fit=True)
+        print("\n" + "=" * 60)
+        print("QR CODE — escaneie com o WhatsApp:")
+        print("=" * 60)
+        qr.print_ascii(invert=True)
+        return True
+    except ImportError:
+        return False
+
+
+def show_qr_image(qr_data: str):
+    """Salva QR Code como PNG e abre com o visualizador padrão do sistema."""
+    raw = qr_data.split(",")[-1]
+    try:
+        img_bytes = base64.b64decode(raw)
+    except Exception:
+        return False
+
+    img_path = Path(tempfile.gettempdir()) / "agente-qrcode.png"
+    img_path.write_bytes(img_bytes)
+
+    try:
+        if OS == "Windows":
+            import os
+            os.startfile(str(img_path))
+        elif OS == "Darwin":
+            subprocess.Popen(["open", str(img_path)])
+        else:
+            subprocess.Popen(["xdg-open", str(img_path)])
+        print(f"\nQR Code aberto no visualizador de imagens.")
+        print(f"(arquivo: {img_path})")
+        return True
+    except Exception:
+        print(f"\nQR Code salvo em: {img_path}")
+        print("Abra esse arquivo manualmente para escanear.")
+        return True
+
+
+def display_qr(qr_data: str):
+    """Exibe QR: tenta terminal primeiro, depois imagem."""
+    if not show_qr_terminal(qr_data):
+        print("\n  (instale 'qrcode' para ver no terminal: pip install qrcode)")
+        show_qr_image(qr_data)
+    print("\nComo escanear:")
+    print("  WhatsApp → Configurações → Aparelhos Conectados → Conectar Aparelho")
+
+
+def main(instance_name: str = None):
+    instance_name = instance_name or cfg_get("instance_name", "meu-agente")
+
     print("=" * 60)
-    print("📱 Conectando WhatsApp")
+    print("Conectando WhatsApp (v2)")
     print("=" * 60)
 
-    instance_name = "meu-agente"
+    # Verificar se já conectado
+    print(f"\nVerificando instância: {instance_name}...")
+    state = get_connection_state(instance_name)
+    if state == "open":
+        print("WhatsApp já conectado! Nada a fazer.")
+        print("\nSe precisar reconectar: python setup/reconnect_whatsapp.py\n")
+        return
 
-    # 1. Verificar se instância já existe
-    print(f"\n1️⃣  Verificando instância: {instance_name}")
-    existing = call_api(f"/instance/fetchInstances", method="GET")
-    instances = existing if isinstance(existing, list) else []
-    # Evolution API v2: campo "name" direto; v1: dentro de "instance.instanceName"
-    instance_names = [
-        i.get("name", "") or i.get("instance", {}).get("instanceName", "")
+    # Garantir que instância existe
+    instances_resp = call_api("/instance/fetchInstances")
+    instances = instances_resp if isinstance(instances_resp, list) else []
+    existing_names = [
+        i.get("name") or i.get("instance", {}).get("instanceName", "")
         for i in instances
     ]
 
-    if instance_name in instance_names:
-        print(f"   ✅ Instância já existe: {instance_name}")
-    else:
-        print(f"   Criando instância...")
-        result = call_api("/instance/create", method="POST", data={
+    if instance_name not in existing_names:
+        print(f"Criando instância '{instance_name}'...")
+        r = call_api("/instance/create", "POST", {
             "instanceName": instance_name,
             "qrcode": True,
-            "integration": "WHATSAPP-BAILEYS"
+            "integration": "WHATSAPP-BAILEYS",
         })
-        if "error" in result and "already" not in str(result.get("error", "")):
-            print(f"   ❌ Erro ao criar instância: {result['error']}")
-            return
-        print(f"   ✅ Instância criada")
+        if "error" in r and "already" not in str(r.get("detail", "")):
+            print(f"Erro ao criar instância: {r}")
+            sys.exit(1)
+        print("  Instância criada.")
 
-    # 2. Gerar QR Code
-    print("\n2️⃣  Gerando QR Code...")
-    qr_result = call_api(f"/instance/connect/{instance_name}", method="GET")
+    # Gerar QR Code
+    print("\nGerando QR Code...")
+    qr_result = call_api(f"/instance/connect/{instance_name}")
 
-    # Evolution API v2: base64 direto; v1: dentro de "qrcode.base64" ou string
-    qr_data = qr_result.get("base64")
+    qr_data = (
+        qr_result.get("base64")
+        or (qr_result.get("qrcode") or {}).get("base64")
+        or (qr_result.get("qrcode") if isinstance(qr_result.get("qrcode"), str) else None)
+    )
+
     if not qr_data:
-        qrcode_field = qr_result.get("qrcode")
-        if isinstance(qrcode_field, dict):
-            qr_data = qrcode_field.get("base64")
-        elif isinstance(qrcode_field, str):
-            qr_data = qrcode_field
+        print(f"\nNão foi possível obter QR Code.")
+        print(f"Resposta da API: {qr_result}")
+        print("\nDicas:")
+        print("  - Verifique se a Evolution API está rodando: docker ps")
+        print("  - Verifique a API key em: python setup/install_evolution.py")
+        sys.exit(1)
 
-    if qr_data:
-        # Salvar QR Code como imagem PNG e abrir no visualizador
-        import base64, subprocess, tempfile, os
-        img_path = Path(tempfile.gettempdir()) / "agente-qrcode.png"
-        try:
-            img_bytes = base64.b64decode(qr_data.split(",")[-1])
-            img_path.write_bytes(img_bytes)
-            subprocess.Popen(["open", str(img_path)])
-            print(f"   ✅ QR Code aberto na tela!")
-            print(f"   📱 Abra o WhatsApp no celular → Configurações → Aparelhos Conectados → Conectar Aparelho")
-        except Exception:
-            print(f"   QR Code (cole em um decoder online): {str(qr_data)[:200]}")
-    else:
-        print(f"   ⚠️  Resposta inesperada: {qr_result}")
+    display_qr(qr_data)
 
-    # 3. Aguardar conexão
-    print("\n3️⃣  Aguardando scan do QR Code (até 90s)...")
+    # Aguardar conexão
+    print("\nAguardando scan (até 90 segundos)...")
     for i in range(90):
-        status_result = call_api(f"/instance/connectionState/{instance_name}", method="GET")
-        state = status_result.get("instance", {}).get("state", "") or status_result.get("state", "")
-
+        state = get_connection_state(instance_name)
         if state == "open":
-            print(f"   ✅ WhatsApp conectado!")
+            print("  WhatsApp conectado!")
+            cfg_save({"whatsapp_connected": True, "instance_name": instance_name})
             break
-
-        if i % 15 == 0 and i > 0:
-            print(f"   (aguardando... {i}s)")
+        if i % 20 == 0 and i > 0:
+            print(f"  (aguardando... {i}s)")
         time.sleep(1)
     else:
-        print("   ⚠️  Timeout — se o QR Code expirou, rode novamente")
+        print("\nTimeout — o QR Code pode ter expirado.")
+        print("Rode novamente para gerar um novo QR Code.")
+        sys.exit(1)
 
     print("\n" + "=" * 60)
-    print("✅ WhatsApp conectado!")
+    print("WhatsApp conectado!")
     print("=" * 60)
     print(f"\nInstância: {instance_name}")
-    print("\nProxima etapa:")
-    print("  python3 setup/test_api.py\n")
+    print("\nPróxima etapa:")
 
-if __name__ == '__main__':
+    if OS == "Windows":
+        print("  python setup/test_api.py --provider openai --key SUA_KEY\n")
+    else:
+        print("  python3 setup/test_api.py --provider openai --key SUA_KEY\n")
+
+
+if __name__ == "__main__":
     main()

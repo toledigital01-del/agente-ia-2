@@ -12,6 +12,8 @@ git clone https://github.com/zxmarketingdigital/agente-ia-vendas.git && cd agent
 
 O Claude abre automaticamente e conduz o setup por você — sem mais nenhum comando.
 
+> **v2.0** — suporte Windows/macOS/Linux, QR Code no terminal, sem git clone da Evolution API, reconexão automática.
+
 ## 📋 O que você vai ter
 
 - ✅ Agente respondendo em tempo real no WhatsApp
@@ -103,8 +105,8 @@ Para rodas 24/7:
 
 ## 📊 Versões Futuras
 
-- **v1.1** — Widget flutuante para sua landing page
-- **v1.2** — Dashboard com métricas dos leads
+- **v2.1** — Widget flutuante para sua landing page
+- **v2.2** — Dashboard web com métricas dos leads
 
 ## 📚 Documentação
 
@@ -122,4 +124,4 @@ MIT — use livremente em produção.
 ---
 
 **Feito por [ZX LAB](https://zxlab.com.br)**
-Março 2026 | v1.0
+Março 2026 | v2.0
