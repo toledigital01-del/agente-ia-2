@@ -42,14 +42,17 @@ def test_gemini(api_key):
     import urllib.request
     import urllib.error
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
     data = {
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.6-flash",
         "messages": [{"role": "user", "content": "Responda com 'IA funcionando!' apenas."}],
-        "max_completion_tokens": 50
+        "max_tokens": 500
     }
 
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
 
     try:
         req = urllib.request.Request(

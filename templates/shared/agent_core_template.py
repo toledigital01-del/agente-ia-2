@@ -79,16 +79,19 @@ def call_openai(messages: list, max_tokens: int) -> str:
 
 def call_gemini(messages: list, max_tokens: int) -> str:
     """Chama Google Gemini (endpoint OpenAI-compatible)."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions?key={AI_API_KEY}"
+    url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
     data = {
         "model": AI_MODEL,
         "messages": [{"role": "system", "content": SYSTEM_PROMPT}] + messages,
-        "max_completion_tokens": max_tokens,
+        "max_tokens": max_tokens,
         "temperature": 0.7
     }
 
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {AI_API_KEY}"
+    }
 
     req = urllib.request.Request(
         url,

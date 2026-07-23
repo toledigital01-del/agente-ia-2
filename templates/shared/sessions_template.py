@@ -64,6 +64,16 @@ def init_db():
         )
     """)
 
+    # Tabela de metadados da sessão (largura, altura, cep, etc.)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS session_metadata (
+            session_id TEXT,
+            key TEXT,
+            value TEXT,
+            PRIMARY KEY (session_id, key)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -236,3 +246,32 @@ def get_stats():
         "leads_today": leads_today,
         "conversion_rate": f"{(checkout_sent / total_leads * 100):.1f}%" if total_leads > 0 else "0%"
     }
+
+
+def save_metadata(session_id: str, key: str, value: str):
+    """Salva um metadado para a sessão (ex: largura, altura, cep)."""
+    conn = _db()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO session_metadata (session_id, key, value)
+        VALUES (?, ?, ?)
+        ON CONFLICT(session_id, key) DO UPDATE SET value = ?
+        """,
+        (session_id, key, str(value), str(value))
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_metadata(session_id: str, key: str, default=None):
+    """Recupera um metadado da sessão."""
+    conn = _db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT value FROM session_metadata WHERE session_id = ? AND key = ?",
+        (session_id, key)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row["value"] if row else default
