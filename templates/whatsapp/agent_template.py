@@ -307,6 +307,12 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
                             res = json.loads(r.read().decode("utf-8"))
                             if "url" in res:
                                 checkout_url = res["url"]
+                                checkout_id = res.get("id", "")
+                                # Salvar metadados de checkout para lembrete automático
+                                save_metadata(lead_id, "checkout_id", checkout_id)
+                                save_metadata(lead_id, "asaas_checkout_url", checkout_url)
+                                save_metadata(lead_id, "checkout_sent_at", str(int(datetime.now().timestamp())))
+                                save_metadata(lead_id, "followup_status", "0")
             except Exception:
                 pass # Em caso de erro, usa o fallback CHECKOUT_LINK
 

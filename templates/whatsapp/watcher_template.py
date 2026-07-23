@@ -167,14 +167,121 @@ def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+# ── Lembretes de Pagamento / Cobrança Ativa (Asaas) ──────────────────────────
+
+def check_asaas_payment_status(payment_link_id: str) -> str:
+    """
+    Verifica se o link de pagamento Asaas foi pago.
+    Retorna: 'PAID' (pago), 'PENDING' (pendente), ou 'NONE' (nenhuma tentativa/pago).
+    """
+    try:
+        p_conf = Path.home() / ".meu-agente" / "config.json"
+        if not p_conf.exists():
+            return "NONE"
+            
+        config_data = json.loads(p_conf.read_text(encoding="utf-8"))
+        asaas_token = config_data.get("asaas_api_key", "")
+        if not asaas_token:
+            return "NONE"
+            
+        url = f"https://api.asaas.com/v3/payments?paymentLink={payment_link_id}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "access_token": asaas_token
+            },
+            method="GET"
+        )
+        
+        with urllib.request.urlopen(req, timeout=10) as r:
+            res = json.loads(r.read().decode("utf-8"))
+            payments = res.get("data", [])
+            if not payments:
+                return "NONE"
+                
+            for p in payments:
+                status = p.get("status", "")
+                if status in ["RECEIVED", "CONFIRMED"]:
+                    return "PAID"
+                    
+            return "PENDING"
+    except Exception as e:
+        logger.error(f"Erro ao verificar pagamento Asaas para o link {payment_link_id}: {e}")
+        return "NONE"
+
+
+def process_payment_followups():
+    """Varre leads e processa lembretes de cobrança ativa de forma assíncrona/periódica."""
+    try:
+        import sessions
+        conn = sessions._db()
+        cursor = conn.cursor()
+        
+        # Buscar leads que receberam checkout
+        cursor.execute("SELECT id, phone, name FROM leads WHERE sent_checkout = 1")
+        leads_rows = cursor.fetchall()
+        conn.close()
+        
+        now_ts = int(time.time())
+        
+        for lead in leads_rows:
+            lead_id = lead["id"]
+            phone = lead["phone"]
+            name = lead["name"]
+            
+            checkout_id = sessions.get_metadata(lead_id, "checkout_id")
+            checkout_sent_at_str = sessions.get_metadata(lead_id, "checkout_sent_at")
+            followup_status = sessions.get_metadata(lead_id, "followup_status", "0")
+            
+            if not checkout_id or not checkout_sent_at_str or followup_status == "PAID":
+                continue
+                
+            # 1. Verificar se já foi pago na Asaas
+            payment_status = check_asaas_payment_status(checkout_id)
+            if payment_status == "PAID":
+                sessions.save_metadata(lead_id, "followup_status", "PAID")
+                logger.info(f"🎉 Pagamento confirmado para o lead {name} ({phone})!")
+                send_whatsapp(phone, f"Oba, {name}! 🎉 Confirmamos o recebimento do seu pagamento. O seu pedido de cortinas/persianas sob medida já foi encaminhado para o nosso setor de fabricação! Em breve te enviaremos o código de rastreamento por aqui. Qualquer dúvida, estou à disposição! 💪")
+                continue
+                
+            # 2. Se não foi pago, calcular o tempo decorrido e enviar lembrete correspondente
+            checkout_sent_at = int(checkout_sent_at_str)
+            elapsed = now_ts - checkout_sent_at
+            
+            # Lembrete de Distração (Após 2 Horas / 7200 segundos)
+            if elapsed >= 7200 and followup_status == "0":
+                sessions.save_metadata(lead_id, "followup_status", "1")
+                logger.info(f"⏳ Enviando lembrete de cobrança (2 horas) para {name} ({phone})")
+                msg_2h = f"Olá, {name}! Vi que o seu link de checkout seguro para as persianas já está pronto, mas o pagamento ainda não foi confirmado. Ficou alguma dúvida ou precisa de ajuda para finalizar? 😊"
+                send_whatsapp(phone, msg_2h)
+                
+            # Lembrete de Escassez / Fila da Fábrica (Após 24 Horas / 86400 segundos)
+            elif elapsed >= 86400 and followup_status == "1":
+                sessions.save_metadata(lead_id, "followup_status", "2")
+                logger.info(f"⏳ Enviando lembrete de cobrança (24 horas) para {name} ({phone})")
+                checkout_url = sessions.get_metadata(lead_id, "asaas_checkout_url", "agilcortinasepersianas.com.br/loja")
+                msg_24h = f"Olá, {name}! Passando para lembrar que o lote de produção da nossa fábrica fecha hoje. Se você quiser garantir que as suas persianas entrem na fabricação desta semana para chegarem o quanto antes, basta finalizar o pagamento pelo link seguro: {checkout_url} 🚀"
+                send_whatsapp(phone, msg_24h)
+                
+    except Exception as e:
+        logger.error(f"Erro no processamento de followups de cobrança: {e}\n{traceback.format_exc()}")
+
+
 # ── Loop principal ────────────────────────────────────────────────────────────
 
 def watch():
     logger.info("🔍 Watcher iniciado")
     state = load_state()
+    iteration_counter = 0
 
     while True:
         try:
+            # Processar lembretes de pagamento a cada 200 iterações (aproximadamente a cada 10 minutos)
+            if iteration_counter % 200 == 0:
+                process_payment_followups()
+            iteration_counter += 1
+
             messages = fetch_messages(count=20)
 
             for msg in messages:
