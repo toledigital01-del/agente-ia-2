@@ -100,6 +100,57 @@ def send_whatsapp(phone: str, message: str) -> bool:
     return success
 
 
+def send_whatsapp_audio(phone: str, message: str) -> bool:
+    """Converte texto para áudio (gTTS) e envia como áudio do WhatsApp (nota de voz)."""
+    import base64
+    import tempfile
+    import os
+    from gtts import gTTS
+    
+    try:
+        # 1. Converter texto para áudio (MP3) usando gTTS
+        tts = gTTS(text=message, lang="pt", slow=False)
+        
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            tts.save(f.name)
+            temp_path = f.name
+            
+        try:
+            # 2. Ler o arquivo de áudio e converter para base64
+            with open(temp_path, "rb") as audio_file:
+                audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
+                
+            # 3. Enviar via Evolution API no endpoint sendWhatsAppAudio
+            result = evolution_request(
+                f"/message/sendWhatsAppAudio/{INSTANCE_NAME}",
+                method="POST",
+                data={
+                    "number": phone,
+                    "options": {
+                        "delay": 1500,
+                        "presence": "recording",
+                        "encoding": True
+                    },
+                    "audioMessage": {
+                        "audio": audio_base64
+                    }
+                }
+            )
+            success = bool(result.get("key") or result.get("id"))
+            if success:
+                logger.info(f"📤 Áudio enviado com sucesso para {phone}")
+                return True
+            else:
+                logger.error(f"❌ Falha ao enviar áudio para {phone}: {result}")
+                return False
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    except Exception as e:
+        logger.error(f"Erro ao gerar/enviar áudio gTTS para {phone}: {e}")
+        return False
+
+
 # ── Extração de mensagens ─────────────────────────────────────────────────────
 
 def extract_message_data(msg) -> dict:
@@ -430,7 +481,14 @@ def watch():
                 try:
                     response = handle_message(phone, name, text)
                     if response:
-                        send_whatsapp(phone, response)
+                        if is_audio:
+                            logger.info(f"📤 Gerando e enviando resposta em áudio para {phone}...")
+                            audio_success = send_whatsapp_audio(phone, response)
+                            if not audio_success:
+                                # Fallback para texto se falhar
+                                send_whatsapp(phone, response)
+                        else:
+                            send_whatsapp(phone, response)
                     else:
                         logger.debug("⏭️  Não é trigger — ignorado")
                 except Exception as e:
