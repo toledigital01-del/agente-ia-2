@@ -24,7 +24,7 @@ SYSTEM_PROMPT = """{{SYSTEM_PROMPT}}"""  # Prompt BANT gerado automaticamente
 SESSION_TTL = 1800  # 30 minutos
 
 
-def call_ai(messages: list, max_tokens: int = 512) -> str:
+def call_ai(messages: list, max_tokens: int = 4096) -> str:
     """
     Chama IA baseado no provider configurado.
 
