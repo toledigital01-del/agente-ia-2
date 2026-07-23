@@ -100,27 +100,60 @@ def send_whatsapp(phone: str, message: str) -> bool:
     return success
 
 
-def send_whatsapp_audio(phone: str, message: str) -> bool:
-    """Converte texto para áudio (gTTS) e envia como áudio do WhatsApp (nota de voz)."""
+def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
+    """Converte texto para áudio usando ElevenLabs API (retorna False se não houver chave ou se falhar)."""
     import base64
     import tempfile
     import os
-    from gtts import gTTS
     
     try:
-        # 1. Converter texto para áudio (MP3) usando gTTS
-        tts = gTTS(text=message, lang="pt", slow=False)
+        # 1. Carregar chave e voz do config.json
+        p_conf = Path.home() / ".meu-agente" / "config.json"
+        if not p_conf.exists():
+            return False
+            
+        config_data = json.loads(p_conf.read_text(encoding="utf-8"))
+        eleven_key = config_data.get("elevenlabs_api_key", "")
+        # Usar voz padrão "Rachel" (21m00Tcm4TlvDq8ikWAM) se não houver outra configurada
+        voice_id = config_data.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")
+        
+        if not eleven_key:
+            return False  # Sem chave, força fallback para gTTS sem erro
+            
+        # 2. Chamar ElevenLabs API
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        payload = {
+            "text": message,
+            "model_id": "eleven_multilingual_v2",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75
+            }
+        }
+        
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "xi-api-key": eleven_key,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            },
+            method="POST"
+        )
         
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            tts.save(f.name)
             temp_path = f.name
             
         try:
-            # 2. Ler o arquivo de áudio e converter para base64
+            with urllib.request.urlopen(req, timeout=40) as r:
+                with open(temp_path, "wb") as f_out:
+                    f_out.write(r.read())
+                    
+            # 3. Converter para base64 e enviar via sendMedia
             with open(temp_path, "rb") as audio_file:
                 audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
                 
-            # 3. Enviar via Evolution API no endpoint sendMedia
             result = evolution_request(
                 f"/message/sendMedia/{INSTANCE_NAME}",
                 method="POST",
@@ -133,10 +166,62 @@ def send_whatsapp_audio(phone: str, message: str) -> bool:
             )
             success = bool(result.get("key") or result.get("id"))
             if success:
-                logger.info(f"📤 Áudio enviado com sucesso para {phone}")
+                logger.info(f"📤 Áudio ElevenLabs enviado com sucesso para {phone}")
                 return True
             else:
-                logger.error(f"❌ Falha ao enviar áudio para {phone}: {result}")
+                logger.error(f"❌ Falha ao enviar áudio ElevenLabs para {phone}: {result}")
+                return False
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    except Exception as e:
+        logger.error(f"Erro ao gerar/enviar áudio ElevenLabs para {phone}: {e}")
+        return False
+
+
+def send_whatsapp_audio(phone: str, message: str) -> bool:
+    """Converte texto para áudio e envia como áudio do WhatsApp, preferindo ElevenLabs se disponível."""
+    # 1. Tentar com ElevenLabs
+    if send_whatsapp_audio_elevenlabs(phone, message):
+        return True
+        
+    # 2. Se falhar ou não houver chave, usar o gTTS (Google) como fallback gratuito
+    logger.info(f"ℹ️ Usando gTTS (Google) como fallback de áudio para {phone}...")
+    import base64
+    import tempfile
+    import os
+    from gtts import gTTS
+    
+    try:
+        # Converter texto para áudio (MP3) usando gTTS
+        tts = gTTS(text=message, lang="pt", slow=False)
+        
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            tts.save(f.name)
+            temp_path = f.name
+            
+        try:
+            # Ler o arquivo de áudio e converter para base64
+            with open(temp_path, "rb") as audio_file:
+                audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
+                
+            # Enviar via Evolution API no endpoint sendMedia
+            result = evolution_request(
+                f"/message/sendMedia/{INSTANCE_NAME}",
+                method="POST",
+                data={
+                    "number": phone,
+                    "mediatype": "audio",
+                    "media": audio_base64,
+                    "fileName": "audio.mp3"
+                }
+            )
+            success = bool(result.get("key") or result.get("id"))
+            if success:
+                logger.info(f"📤 Áudio gTTS enviado com sucesso para {phone}")
+                return True
+            else:
+                logger.error(f"❌ Falha ao enviar áudio gTTS para {phone}: {result}")
                 return False
         finally:
             if os.path.exists(temp_path):
