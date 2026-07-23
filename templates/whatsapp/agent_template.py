@@ -115,7 +115,22 @@ TRIGGER_KEYWORDS = [
     "{{PRODUCT_NAME}}",
     "dúvida",
     "informação",
-    "saiba mais"
+    "saiba mais",
+    "orçamento",
+    "orcamento",
+    "cortina",
+    "persiana",
+    "toldo",
+    "tela",
+    "mosqueteira",
+    "blackout",
+    "double vision",
+    "valor",
+    "preço",
+    "preco",
+    "quanto custa",
+    "comprar",
+    "encomendar"
 ]
 
 DB_PATH = "~/meu-agente/dados.sqlite"
