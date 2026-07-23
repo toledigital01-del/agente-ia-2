@@ -529,7 +529,14 @@ def watch():
                 try:
                     response = handle_message(phone, name, text)
                     if response:
-                        send_whatsapp(phone, response)
+                        if is_audio:
+                            logger.info(f"📤 Gerando e enviando resposta em áudio para {phone}...")
+                            audio_success = send_whatsapp_audio(phone, response)
+                            if not audio_success:
+                                # Fallback para texto se falhar
+                                send_whatsapp(phone, response)
+                        else:
+                            send_whatsapp(phone, response)
                     else:
                         logger.debug("⏭️  Não é trigger — ignorado")
                 except Exception as e:
