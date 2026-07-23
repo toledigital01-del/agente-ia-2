@@ -247,7 +247,70 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
 
     # 8. Verificar intenção de compra
     if is_purchase_intent(text, messages) and len(messages) >= 4:
-        response += f"\n\n{format_checkout_message()}"
+        # Calcular preço dinâmico com base nas medidas e CEP salvos do lead
+        saved_w = get_metadata(lead_id, "width")
+        saved_h = get_metadata(lead_id, "height")
+        saved_cep = get_metadata(lead_id, "cep")
+        
+        total_price = 0.0
+        if saved_w and saved_h:
+            try:
+                w_float = float(saved_w)
+                h_float = float(saved_h)
+                area = w_float * h_float
+                charged_area = max(1.80, area)
+                
+                # Preço padrão (Rolô Blackout como padrão se não soubermos o exato)
+                # m² = R$ 147.39
+                total_price = charged_area * 147.39
+                
+                # Somar frete se disponível
+                if saved_cep:
+                    quote_res = get_shipping_quote(saved_cep, w_float, h_float)
+                    if "quotes" in quote_res and quote_res["quotes"]:
+                        total_price += quote_res["quotes"][0]["price"]
+            except Exception:
+                pass
+
+        # Link padrão de contingência
+        checkout_url = CHECKOUT_LINK
+        
+        # Se temos um preço válido, gera o link na Asaas
+        if total_price > 20.0:
+            try:
+                from pathlib import Path
+                p_conf = Path.home() / ".meu-agente" / "config.json"
+                if p_conf.exists():
+                    config_data = json.loads(p_conf.read_text(encoding="utf-8"))
+                    asaas_token = config_data.get("asaas_api_key", "")
+                    
+                    if asaas_token:
+                        asaas_url = "https://api.asaas.com/v3/paymentLinks"
+                        payload = {
+                            "name": f"Pedido Customizado - Ágil Persianas",
+                            "description": f"Persiana sob medida de {saved_w}m x {saved_h}m com envio incluso para o CEP {saved_cep}",
+                            "value": round(total_price, 2),
+                            "billingType": "UNDEFINED",
+                            "chargeType": "DETACHED",
+                            "dueDateLimitDays": 3
+                        }
+                        req = urllib.request.Request(
+                            asaas_url,
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers={
+                                "Content-Type": "application/json",
+                                "access_token": asaas_token
+                            },
+                            method="POST"
+                        )
+                        with urllib.request.urlopen(req, timeout=12) as r:
+                            res = json.loads(r.read().decode("utf-8"))
+                            if "url" in res:
+                                checkout_url = res["url"]
+            except Exception:
+                pass # Em caso de erro, usa o fallback CHECKOUT_LINK
+
+        response += f"\n\n{format_checkout_message(checkout_url)}"
         mark_checkout_sent(lead_id)
 
     return response

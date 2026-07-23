@@ -235,10 +235,10 @@ def is_purchase_intent(message: str, conversation: list = None) -> bool:
     return False
 
 
-def format_checkout_message() -> str:
+def format_checkout_message(url: str = CHECKOUT_LINK) -> str:
     """Formata mensagem com link de checkout."""
     return f"""Perfeito! Passei tudo aqui. Deixa eu enviar nosso checkout pra você:
 
-{CHECKOUT_LINK}
+{url}
 
 Qualquer dúvida depois da compra, eu fico por aqui! 💪"""
