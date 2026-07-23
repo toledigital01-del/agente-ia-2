@@ -120,20 +120,15 @@ def send_whatsapp_audio(phone: str, message: str) -> bool:
             with open(temp_path, "rb") as audio_file:
                 audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
                 
-            # 3. Enviar via Evolution API no endpoint sendWhatsAppAudio
+            # 3. Enviar via Evolution API no endpoint sendMedia
             result = evolution_request(
-                f"/message/sendWhatsAppAudio/{INSTANCE_NAME}",
+                f"/message/sendMedia/{INSTANCE_NAME}",
                 method="POST",
                 data={
                     "number": phone,
-                    "options": {
-                        "delay": 1500,
-                        "presence": "recording",
-                        "encoding": True
-                    },
-                    "audioMessage": {
-                        "audio": audio_base64
-                    }
+                    "mediatype": "audio",
+                    "media": audio_base64,
+                    "fileName": "audio.mp3"
                 }
             )
             success = bool(result.get("key") or result.get("id"))
