@@ -146,19 +146,8 @@ DB_PATH = "~/meu-agente/dados.sqlite"
 
 
 def is_trigger(text: str) -> bool:
-    """Verifica se mensagem contém trigger phrase."""
-    text_lower = text.lower()
-
-    # Match exato tem prioridade
-    if TRIGGER_EXACT.lower() in text_lower:
-        return True
-
-    # Verificar keywords
-    for keyword in TRIGGER_KEYWORDS:
-        if keyword.lower() in text_lower:
-            return True
-
-    return False
+    """Verifica se mensagem contém trigger phrase (Sempre ativa para responder a absolutamente qualquer mensagem)."""
+    return True
 
 
 def handle_message(phone: str, sender_name: str, text: str) -> str:
