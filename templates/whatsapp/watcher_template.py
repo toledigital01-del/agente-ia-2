@@ -452,6 +452,7 @@ def watch():
     logger.info("🔍 Watcher iniciado")
     state = load_state()
     iteration_counter = 0
+    first_run = True
 
     while True:
         try:
@@ -461,6 +462,19 @@ def watch():
             iteration_counter += 1
 
             messages = fetch_messages(count=20)
+
+            # Ignorar mensagens históricas na primeira execução para evitar flood/travamento da API do Gemini
+            if first_run:
+                for msg in messages:
+                    msg_data = extract_message_data(msg)
+                    if msg_data and msg_data.get("id"):
+                        if msg_data["id"] not in state["seen_ids"]:
+                            state["seen_ids"].append(msg_data["id"])
+                save_state(state)
+                first_run = False
+                logger.info("✅ Mensagens do histórico ignoradas com sucesso na inicialização.")
+                time.sleep(POLL_INTERVAL)
+                continue
 
             for msg in messages:
                 msg_data = extract_message_data(msg)
