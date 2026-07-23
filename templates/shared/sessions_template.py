@@ -168,7 +168,7 @@ def create_lead(phone: str, name: str = None, email: str = None, source: str = "
             updated_at = ?
         """,
         (
-            lead_id, phone, name, email, source, "", now,
+            lead_id, phone, name, email, source, "", now, now,
             name, email, now
         )
     )
