@@ -134,6 +134,8 @@ def extract_message_data(msg) -> dict:
     if not isinstance(message_content, dict):
         return {}
 
+    is_audio = "audioMessage" in message_content
+
     text = (
         message_content.get("conversation") or
         (message_content.get("extendedTextMessage") or {}).get("text") or
@@ -145,6 +147,7 @@ def extract_message_data(msg) -> dict:
         "phone": phone,
         "name": push_name,
         "text": text.strip(),
+        "is_audio": is_audio,
     }
 
 
@@ -268,6 +271,95 @@ def process_payment_followups():
         logger.error(f"Erro no processamento de followups de cobrança: {e}\n{traceback.format_exc()}")
 
 
+# ── Transcrição de Áudio (Whisper) ───────────────────────────────────────────
+
+def transcribe_audio_base64(base64_str: str) -> str:
+    """Transcreve um áudio em base64 usando o Groq ou OpenAI Whisper API."""
+    import base64
+    import tempfile
+    import os
+    
+    try:
+        # Carregar chaves do ~/.config/watch/.env se disponíveis
+        watch_env_path = Path.home() / ".config" / "watch" / ".env"
+        groq_key = ""
+        openai_key = ""
+        
+        if watch_env_path.exists():
+            for line in watch_env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("GROQ_API_KEY="):
+                    groq_key = line.split("=", 1)[1].strip()
+                elif line.startswith("OPENAI_API_KEY="):
+                    openai_key = line.split("=", 1)[1].strip()
+                    
+        # Configurar endpoints e modelo
+        if groq_key:
+            api_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+            api_key = groq_key
+            model = "whisper-large-v3"
+        elif openai_key:
+            api_url = "https://api.openai.com/v1/audio/transcriptions"
+            api_key = openai_key
+            model = "whisper-1"
+        else:
+            # Se não houver no watch, tenta usar a ai_api_key do config.json como fallback
+            p_conf = Path.home() / ".meu-agente" / "config.json"
+            if p_conf.exists():
+                config_data = json.loads(p_conf.read_text(encoding="utf-8"))
+                # Pega a chave OpenAI se houver (mas de forma genérica)
+                openai_key = config_data.get("ai_api_key", "")
+                if openai_key and len(openai_key) > 30: # Evitar chaves curtas
+                    api_url = "https://api.openai.com/v1/audio/transcriptions"
+                    api_key = openai_key
+                    model = "whisper-1"
+                else:
+                    logger.warning("Nenhuma chave de Whisper (Groq/OpenAI) disponível.")
+                    return ""
+            else:
+                logger.warning("Nenhuma chave de Whisper encontrada.")
+                return ""
+            
+        audio_data = base64.b64decode(base64_str)
+        
+        # Fazer a requisição multipart POST manual com urllib
+        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+        parts = []
+        
+        parts.append(f"--{boundary}")
+        parts.append('Content-Disposition: form-data; name="model"')
+        parts.append("")
+        parts.append(model)
+        
+        parts.append(f"--{boundary}")
+        parts.append('Content-Disposition: form-data; name="file"; filename="audio.mp3"')
+        parts.append("Content-Type: audio/mpeg")
+        parts.append("")
+        
+        body_bytes = b""
+        for part in parts:
+            body_bytes += part.encode("utf-8") + b"\r\n"
+            
+        body_bytes += audio_data + b"\r\n"
+        body_bytes += f"--{boundary}--\r\n".encode("utf-8")
+        
+        req = urllib.request.Request(
+            api_url,
+            data=body_bytes,
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Authorization": f"Bearer {api_key}"
+            },
+            method="POST"
+        )
+        
+        with urllib.request.urlopen(req, timeout=30) as r:
+            res = json.loads(r.read().decode("utf-8"))
+            return res.get("text", "")
+    except Exception as e:
+        logger.error(f"Erro ao transcrever áudio Whisper: {e}")
+        return ""
+
+
 # ── Loop principal ────────────────────────────────────────────────────────────
 
 def watch():
@@ -286,7 +378,7 @@ def watch():
 
             for msg in messages:
                 msg_data = extract_message_data(msg)
-                if not msg_data or not msg_data.get("phone") or not msg_data.get("text"):
+                if not msg_data or not msg_data.get("phone"):
                     continue
 
                 msg_id = msg_data["id"]
@@ -297,6 +389,40 @@ def watch():
                 phone = msg_data["phone"]
                 name = msg_data["name"]
                 text = msg_data["text"]
+                is_audio = msg_data.get("is_audio", False)
+
+                # Se for mensagem de áudio, baixar e transcrever
+                if is_audio:
+                    logger.info(f"🎤 {name} ({phone}) enviou um áudio. Baixando e transcrevendo...")
+                    media_res = evolution_request(
+                        f"/chat/getBase64FromMediaMessage/{INSTANCE_NAME}",
+                        method="POST",
+                        data={
+                            "message": {
+                                "key": {
+                                    "id": msg_id
+                                }
+                            },
+                            "convertToMp3": True
+                        }
+                    )
+                    base64_audio = media_res.get("base64")
+                    if base64_audio:
+                        transcribed_text = transcribe_audio_base64(base64_audio)
+                        if transcribed_text:
+                            text = transcribed_text
+                            logger.info(f"🎤 Áudio Transcrito: {text}")
+                        else:
+                            logger.warning("❌ Falha ao transcrever o áudio.")
+                            send_whatsapp(phone, "Desculpe, não consegui compreender o seu áudio. Você poderia digitar ou enviar novamente? 😊")
+                            continue
+                    else:
+                        logger.error("❌ Falha ao obter base64 do áudio da Evolution API.")
+                        continue
+
+                # Se após processamento de áudio o texto estiver vazio, ignora
+                if not text.strip():
+                    continue
 
                 logger.info(f"📩 {name} ({phone}): {text[:60]}")
 
