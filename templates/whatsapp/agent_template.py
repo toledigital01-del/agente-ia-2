@@ -133,7 +133,13 @@ TRIGGER_KEYWORDS = [
     "preco",
     "quanto custa",
     "comprar",
-    "encomendar"
+    "encomendar",
+    "oi",
+    "olá",
+    "ola",
+    "bom dia",
+    "boa tarde",
+    "boa noite"
 ]
 
 DB_PATH = "~/meu-agente/dados.sqlite"
