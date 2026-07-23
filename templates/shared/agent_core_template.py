@@ -142,26 +142,24 @@ def call_anthropic(messages: list, max_tokens: int) -> str:
 
 def is_purchase_intent(message: str, conversation: list = None) -> bool:
     """
-    Detecta se o lead tem intenção de compra baseado em keywords e contexto.
-
-    Heurísticas:
-    - Palavras-chave: "quero", "comprar", "quanto custa", "como funciona"
-    - Respostas positivas após BANT
-    - Múltiplas mensagens indicam interesse
+    Detecta se o lead tem intenção real de fechamento/compra (para envio de link).
     """
     if not message:
         return False
 
     message_lower = message.lower()
-    purchase_keywords = ["quero", "compra", "valor", "preço", "quanto", "custa", "funciona", "começar", "iniciar"]
+    
+    # Palavras-chave de alto interesse de fechamento (solicitação explícita de link ou pagamento)
+    closing_keywords = [
+        "manda o link", "me manda o link", "enviar o link", "envia o link", 
+        "passa o link", "link de pagamento", "link para pagar", "como faço para comprar",
+        "quero comprar", "quero fechar", "gerar o link", "onde eu pago", "link de compra",
+        "link do checkout", "passa o pix", "me manda o pix", "chave pix", "pagar no pix",
+        "comprar agora", "fechar pedido", "fechar o pedido", "fazer o pagamento"
+    ]
 
-    # Verificar keywords
-    if any(kw in message_lower for kw in purchase_keywords):
-        return True
-
-    # Verificar histórico (se 3+ mensagens, pode ter intenção)
-    if conversation and len(conversation) >= 3:
-        # Se ainda enviou mais de 2 mensagens, provavelmente está interessado
+    # Verificar se o cliente solicitou diretamente o link ou fechamento
+    if any(kw in message_lower for kw in closing_keywords):
         return True
 
     return False
