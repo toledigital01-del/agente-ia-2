@@ -26,6 +26,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
 from agent_core_template import call_ai, is_purchase_intent, format_checkout_message, SYSTEM_PROMPT, CHECKOUT_LINK
 from sessions_template import init_db, load_session, save_session, create_lead, add_message, mark_checkout_sent, save_metadata, get_metadata
 
+# Inicializar o banco de dados automaticamente ao importar o módulo
+init_db()
+
 import re
 
 def extract_dimensions(text: str):
