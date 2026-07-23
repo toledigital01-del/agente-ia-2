@@ -180,55 +180,9 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
 
 
 def send_whatsapp_audio(phone: str, message: str) -> bool:
-    """Converte texto para áudio e envia como áudio do WhatsApp, preferindo ElevenLabs se disponível."""
-    # 1. Tentar com ElevenLabs
-    if send_whatsapp_audio_elevenlabs(phone, message):
-        return True
-        
-    # 2. Se falhar ou não houver chave, usar o gTTS (Google) como fallback gratuito
-    logger.info(f"ℹ️ Usando gTTS (Google) como fallback de áudio para {phone}...")
-    import base64
-    import tempfile
-    import os
-    from gtts import gTTS
-    
-    try:
-        # Converter texto para áudio (MP3) usando gTTS
-        tts = gTTS(text=message, lang="pt", slow=False)
-        
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            tts.save(f.name)
-            temp_path = f.name
-            
-        try:
-            # Ler o arquivo de áudio e converter para base64
-            with open(temp_path, "rb") as audio_file:
-                audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
-                
-            # Enviar via Evolution API no endpoint sendMedia
-            result = evolution_request(
-                f"/message/sendMedia/{INSTANCE_NAME}",
-                method="POST",
-                data={
-                    "number": phone,
-                    "mediatype": "audio",
-                    "media": audio_base64,
-                    "fileName": "audio.mp3"
-                }
-            )
-            success = bool(result.get("key") or result.get("id"))
-            if success:
-                logger.info(f"📤 Áudio gTTS enviado com sucesso para {phone}")
-                return True
-            else:
-                logger.error(f"❌ Falha ao enviar áudio gTTS para {phone}: {result}")
-                return False
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-    except Exception as e:
-        logger.error(f"Erro ao gerar/enviar áudio gTTS para {phone}: {e}")
-        return False
+    """Converte texto para áudio e envia como áudio do WhatsApp, utilizando EXCLUSIVAMENTE a ElevenLabs."""
+    # Tentar com ElevenLabs. Se falhar ou não houver chave, retorna False para forçar o envio em texto!
+    return send_whatsapp_audio_elevenlabs(phone, message)
 
 
 # ── Extração de mensagens ─────────────────────────────────────────────────────
