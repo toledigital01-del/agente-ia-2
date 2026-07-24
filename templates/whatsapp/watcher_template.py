@@ -156,13 +156,17 @@ def number_to_words(n: int) -> str:
 
 
 def price_to_words(price_str: str) -> str:
-    """Converte uma string contendo valor monetário em reais escritos por extenso."""
-    price_str = price_str.replace("R$", "").replace(" ", "")
+    """Converte uma string contendo valor monetário (R$ ou BRL) em reais escritos por extenso."""
+    price_str = price_str.replace("R$", "").replace("BRL", "").replace("Brl", "").replace("brl", "").replace(" ", "")
     
     if "," in price_str:
         parts = price_str.split(",")
         reais_str = "".join(filter(str.isdigit, parts[0]))
         cents_str = "".join(filter(str.isdigit, parts[1]))[:2]
+    elif "." in price_str and len(price_str.split(".")[-1]) == 2:
+        parts = price_str.split(".")
+        reais_str = "".join(filter(str.isdigit, parts[0]))
+        cents_str = "".join(filter(str.isdigit, parts[1]))
     else:
         reais_str = "".join(filter(str.isdigit, price_str))
         cents_str = "0"
@@ -193,14 +197,28 @@ def price_to_words(price_str: str) -> str:
 
 
 def preprocess_text_for_tts(text: str) -> str:
-    """Prepara o texto para ser falado de forma perfeita, pausada e sem erros de números."""
+    """Prepara o texto para ser falado de forma perfeita, pausada e sem erros de números ou símbolos."""
     import re
     
-    # 1. Substituir preços por extenso (R$ 147,39 -> cento e quarenta e sete reais e trinta e nove centavos)
-    pattern_price = r"R\$\s*(\d+(?:[\.,]\d+)*)"
-    text = re.sub(pattern_price, lambda m: price_to_words(m.group(0)), text)
+    # Substituir símbolos indesejados comuns no chat de medidas
+    text = text.replace("+", " e ").replace(" x ", " por ").replace(" X ", " por ")
     
-    # 2. Adicionar reticências (...) para forçar pausas de respiração naturais do modelo nas pontuações
+    # 1. Substituir preços por extenso em português (formatos R$ 147,39 ou 147,39 BRL)
+    pattern_price_rs = r"R\$\s*(\d+(?:[\.,]\d+)*)"
+    text = re.sub(pattern_price_rs, lambda m: price_to_words(m.group(0)), text)
+    
+    pattern_price_brl = r"(\d+(?:[\.,]\d+)*)\s*(?:BRL|Brl|brl)\b"
+    text = re.sub(pattern_price_brl, lambda m: price_to_words(m.group(0)), text)
+    
+    # 2. Substituir decimais de tamanho soltos por extenso (ex: 1.50 ou 1,50 ou 2.25)
+    def decimal_replacer(match):
+        reais_part = int(match.group(1))
+        cents_part = int(match.group(2))
+        return f"{number_to_words(reais_part)} e {number_to_words(cents_part)}"
+        
+    text = re.sub(r"\b(\d+)[.,](\d{2})\b", decimal_replacer, text)
+    
+    # 3. Adicionar reticências (...) para forçar pausas de respiração naturais do modelo nas pontuações
     text = text.replace(", ", ", ... ")
     text = text.replace(". ", ". ... ")
     text = text.replace("! ", "! ... ")
