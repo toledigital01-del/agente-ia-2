@@ -238,7 +238,7 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
             "text": message_clean,
             "model_id": "eleven_multilingual_v2",
             "voice_settings": {
-                "stability": 0.65,
+                "stability": 0.85,
                 "similarity_boost": 0.85
             }
         }
