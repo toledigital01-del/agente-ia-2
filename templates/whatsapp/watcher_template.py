@@ -100,6 +100,115 @@ def send_whatsapp(phone: str, message: str) -> bool:
     return success
 
 
+# ── Funções de Escrita Numérica por Extenso (Tratamento para ElevenLabs) ──────
+
+def number_to_words(n: int) -> str:
+    """Converte um número inteiro de até 999.999 em palavras em português."""
+    if n == 0:
+        return "zero"
+        
+    units = ["", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove"]
+    teens = ["dez", "onze", "doze", "treze", "quatorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove"]
+    tens = ["", "dez", "vinte", "trinta", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa"]
+    hundreds = ["", "cento", "duzentos", "trezentos", "quatrocentos", "quinhentos", "seiscentos", "setecentos", "oitocentos", "novecentos"]
+    
+    if n == 100:
+        return "cem"
+        
+    words = []
+    
+    # Milhares
+    thousands = n // 1000
+    if thousands > 0:
+        if thousands == 1:
+            words.append("mil")
+        else:
+            words.append(number_to_words(thousands) + " mil")
+        n = n % 1000
+        if n > 0:
+            if n < 100 or n % 100 == 0:
+                words.append("e")
+                
+    # Centenas
+    if n > 0:
+        h = n // 100
+        if h > 0:
+            words.append(hundreds[h])
+            n = n % 100
+            if n > 0:
+                words.append("e")
+                
+    # Dezenas e Unidades
+    if n > 0:
+        if 10 <= n < 20:
+            words.append(teens[n - 10])
+        else:
+            t = n // 10
+            u = n % 10
+            if t > 0:
+                words.append(tens[t])
+                if u > 0:
+                    words.append("e")
+            if u > 0:
+                words.append(units[u])
+                
+    return " ".join(words)
+
+
+def price_to_words(price_str: str) -> str:
+    """Converte uma string contendo valor monetário em reais escritos por extenso."""
+    price_str = price_str.replace("R$", "").replace(" ", "")
+    
+    if "," in price_str:
+        parts = price_str.split(",")
+        reais_str = "".join(filter(str.isdigit, parts[0]))
+        cents_str = "".join(filter(str.isdigit, parts[1]))[:2]
+    else:
+        reais_str = "".join(filter(str.isdigit, price_str))
+        cents_str = "0"
+        
+    try:
+        reais = int(reais_str) if reais_str else 0
+        cents = int(cents_str) if cents_str else 0
+        if len(cents_str) == 1 and cents_str != "0":
+            cents = cents * 10
+    except Exception:
+        return price_str
+        
+    reais_word = "real" if reais == 1 else "reais"
+    cents_word = "centavo" if cents == 1 else "centavos"
+    
+    result = []
+    if reais > 0:
+        result.append(f"{number_to_words(reais)} {reais_word}")
+    if cents > 0:
+        if reais > 0:
+            result.append("e")
+        result.append(f"{number_to_words(cents)} {cents_word}")
+        
+    if not result:
+        return "zero reais"
+        
+    return " ".join(result)
+
+
+def preprocess_text_for_tts(text: str) -> str:
+    """Prepara o texto para ser falado de forma perfeita, pausada e sem erros de números."""
+    import re
+    
+    # 1. Substituir preços por extenso (R$ 147,39 -> cento e quarenta e sete reais e trinta e nove centavos)
+    pattern_price = r"R\$\s*(\d+(?:[\.,]\d+)*)"
+    text = re.sub(pattern_price, lambda m: price_to_words(m.group(0)), text)
+    
+    # 2. Adicionar reticências (...) para forçar pausas de respiração naturais do modelo nas pontuações
+    text = text.replace(", ", ", ... ")
+    text = text.replace(". ", ". ... ")
+    text = text.replace("! ", "! ... ")
+    text = text.replace("? ", "? ... ")
+    
+    return text
+
+
 def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
     """Converte texto para áudio usando ElevenLabs API (retorna False se não houver chave ou se falhar)."""
     import base64
@@ -120,10 +229,13 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
         if not eleven_key:
             return False  # Sem chave, força fallback para gTTS sem erro
             
+        # Pré-processar o texto para expandir preços por extenso e adicionar pausas de respiração!
+        message_clean = preprocess_text_for_tts(message)
+            
         # 2. Chamar ElevenLabs API
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         payload = {
-            "text": message,
+            "text": message_clean,
             "model_id": "eleven_multilingual_v2",
             "voice_settings": {
                 "stability": 0.65,
