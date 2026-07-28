@@ -36,12 +36,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent))
-from agent import handle_message, is_trigger
+from agent import handle_message, is_trigger, is_handoff_request
 
 # ── Configuração (preenchida pelo setup) ──────────────────────────────────────
 EVOLUTION_URL = "http://localhost:8080"
 EVOLUTION_API_KEY = "{{EVOLUTION_API_KEY}}"
 INSTANCE_NAME = "meu-agente"
+OWNER_PHONE = "{{OWNER_PHONE}}"  # Recebe alertas quando um lead pede atendimento humano
 POLL_INTERVAL = 3  # segundos
 
 STATE_FILE = Path.home() / "meu-agente" / "watcher_state.json"
@@ -340,11 +341,19 @@ def extract_message_data(msg) -> dict:
     if "@g.us" in remote_jid:
         return {}
 
-    # LID format (novo endereçamento WhatsApp): usar remoteJidAlt com número real
-    if key.get("addressingMode") == "lid" and key.get("remoteJidAlt"):
+    # LID format (novo endereçamento WhatsApp para números fora dos contatos):
+    # sempre preferir remoteJidAlt (número real) quando disponível, independente
+    # do campo addressingMode — na prática ele nem sempre vem preenchido mesmo
+    # quando remoteJid já está em formato @lid.
+    if key.get("remoteJidAlt"):
         phone = key["remoteJidAlt"].replace("@s.whatsapp.net", "")
+    elif "@lid" in remote_jid:
+        # Sem remoteJidAlt não há número real utilizável — o ID @lid cru não é um
+        # telefone válido pra Evolution API (sempre dá HTTP 400 ao tentar responder).
+        # Ignorar em vez de ficar tentando enviar e falhando silenciosamente pro lead.
+        return {}
     else:
-        phone = remote_jid.replace("@s.whatsapp.net", "").replace("@lid", "")
+        phone = remote_jid.replace("@s.whatsapp.net", "")
 
     push_name = msg.get("pushName", "Lead")
 
@@ -433,6 +442,38 @@ def check_asaas_payment_status(payment_link_id: str) -> str:
         return "NONE"
 
 
+def check_human_handoff(phone: str, name: str, text: str) -> bool:
+    """
+    Verifica se a IA deve ficar de fora dessa mensagem porque o lead está em
+    atendimento humano. Detecta pedidos novos de handoff (pausa a IA, avisa o
+    cliente e notifica OWNER_PHONE). Fica pausado até alguém liberar manualmente
+    (sem timeout automático — decisão explícita do cliente, 2026-07-28).
+
+    Retorna True se a mensagem foi interceptada (a IA NÃO deve responder).
+    """
+    import sessions
+    lead_id = sessions.create_lead(phone, name=name)
+    status = sessions.get_metadata(lead_id, "human_handoff", "0")
+
+    if status == "1":
+        logger.info(f"🙋 Mensagem de {name} ({phone}) ignorada pela IA — lead em atendimento humano.")
+        return True
+
+    if is_handoff_request(text):
+        sessions.save_metadata(lead_id, "human_handoff", "1")
+        sessions.save_metadata(lead_id, "human_handoff_at", str(int(time.time())))
+        logger.info(f"🙋 {name} ({phone}) pediu atendimento humano. Pausando IA e notificando o responsável.")
+        send_whatsapp(phone, "Claro! Só um momento que já vou te conectar com um de nossos atendentes. 🙋")
+        if OWNER_PHONE:
+            send_whatsapp(
+                OWNER_PHONE,
+                f"🔔 {name} ({phone}) pediu atendimento humano.\nÚltima mensagem: \"{text}\"\n\nA IA foi pausada para esse lead — responda direto por aqui no WhatsApp."
+            )
+        return True
+
+    return False
+
+
 def process_payment_followups():
     """Varre leads e processa lembretes de cobrança ativa de forma assíncrona/periódica."""
     try:
@@ -455,8 +496,12 @@ def process_payment_followups():
             checkout_id = sessions.get_metadata(lead_id, "checkout_id")
             checkout_sent_at_str = sessions.get_metadata(lead_id, "checkout_sent_at")
             followup_status = sessions.get_metadata(lead_id, "followup_status", "0")
-            
+
             if not checkout_id or not checkout_sent_at_str or followup_status == "PAID":
+                continue
+
+            # Não manda lembrete automático se um humano já assumiu essa conversa
+            if sessions.get_metadata(lead_id, "human_handoff", "0") == "1":
                 continue
                 
             # 1. Verificar se já foi pago na Asaas
@@ -664,6 +709,9 @@ def watch():
                     continue
 
                 logger.info(f"📩 {name} ({phone}): {text[:60]}")
+
+                if check_human_handoff(phone, name, text):
+                    continue
 
                 try:
                     response = handle_message(phone, name, text)

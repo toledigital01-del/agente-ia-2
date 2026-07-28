@@ -44,6 +44,7 @@ def main():
     evolution_api_key = cfg.get("evolution_api_key", "")
     evolution_url = cfg.get("evolution_url", "http://localhost:8080")
     instance_name = cfg.get("instance_name", "meu-agente")
+    owner_phone = cfg.get("owner_phone", "")
 
     # 3. Gerar agent_core.py (a partir de templates/shared/agent_core_template.py)
     core_template_path = Path("templates/shared/agent_core_template.py")
@@ -116,6 +117,7 @@ from sessions import init_db, load_session, save_session, create_lead, add_messa
     print("  Gerando watcher.py...")
     watcher_content = watcher_template_path.read_text(encoding="utf-8")
     watcher_content = watcher_content.replace("{{EVOLUTION_API_KEY}}", evolution_api_key)
+    watcher_content = watcher_content.replace("{{OWNER_PHONE}}", owner_phone)
     watcher_content = watcher_content.replace("INSTANCE_NAME = \"meu-agente\"", f"INSTANCE_NAME = \"{instance_name}\"")
     watcher_content = watcher_content.replace("EVOLUTION_URL = \"http://localhost:8080\"", f"EVOLUTION_URL = \"{evolution_url}\"")
 
