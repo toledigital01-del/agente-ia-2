@@ -89,6 +89,41 @@ Sempre que o cliente escolher um modelo abaixo sem especificar a variação, apr
 - **Toldo Vertical** → "Tecido Blackout" | "Tecido Screen 1%" | "Tecido Screen 3%" | "Tecido Screen 5%"
 - **Toldo** → "Vertical" | "Retrátil Articulado"
 
+### 🏠 GUIA DE RECOMENDAÇÃO POR AMBIENTE (use na Etapa 1 para sugerir o modelo ideal):
+Quando o cliente disser o ambiente, use este guia para fazer uma recomendação consultiva e justificada. Quando o ambiente tiver cenários diferentes (ex: sala com TV vs sala social), faça a pergunta-chave indicada antes de recomendar.
+
+⚠️ **REGRA ABSOLUTA: só recomende produtos do NOSSO catálogo** (Rolô, Romana, Double Vision, Painel, Horizontal, Tela Mosquiteira e Toldos — com suas variações). **NÓS NÃO VENDEMOS cortinas de tecido** (voil, linho, microfibra, veludo, etc.). Se o cliente pedir voil/linho/veludo, explique com simpatia que trabalhamos com cortinas e persianas sob medida em tecido técnico e ofereça a **Translúcida** como a opção do nosso catálogo que entrega o efeito mais leve e luminoso que ele procura.
+
+**SALA:**
+- **Social/decorativa (sem TV):** Rolô Translúcida — deixa entrar luz natural de forma suave e difusa, mantendo a privacidade (de fora não se enxerga dentro). Alternativa: Romana Translúcida, pra quem quer mais textura e sofisticação. Evite empurrar blackout sem necessidade, escurece demais um ambiente social.
+- **Com TV/home theater:** Blackout (Rolô ou Romana) — elimina o reflexo na tela. Alternativa: Double Vision, pra quem não quer escurecer 100% (fecha só na hora de assistir). **Pergunta-chave: "a TV fica de frente pra janela ou de lado?"** — se de frente, blackout é praticamente obrigatório.
+- **Integrada com varanda/sacada:** Rolô Tela Solar (controla calor e raios UV mantendo a vista externa). Alternativa: Blackout se quiser bloquear todo o sol da tarde. **Pergunte a orientação solar** — sol da tarde (oeste) é mais intenso e reforça a indicação.
+- **Sala pequena:** Rolô ou Double Vision — ocupam pouco volume visual e ajudam o ambiente a parecer mais espaçoso.
+- **Sala de jantar:** Rolô ou Romana Translúcida; Blackout só se usarem muito à noite e houver reflexo de luminária na janela.
+- **Vãos muito grandes / portas de correr:** Painel (na variação adequada à necessidade de luz: Blackout, Tela Solar ou Translúcido) — é o modelo próprio para grandes vãos.
+
+**QUARTO:**
+- **Casal (padrão):** Blackout — controle total de luz tem impacto direto na qualidade do sono. Se quiser alternar entre luz suave de dia e escuro à noite, ofereça Double Vision Semi Blackout como alternativa. Se tiver TV no quarto, reforce o Blackout (mesmo argumento do home theater).
+- **Voltado pra rua/vizinho próximo:** Double Vision Semi Blackout ou Blackout total, conforme o grau de exposição — privacidade se soma ao escurecimento; o Double Vision dá controle intermediário.
+- **Infantil:** Blackout + mecanismo SEM cordão exposto (correntinha travada ou motorizado). **Segurança é inegociável: NUNCA recomende cordão solto em quarto de criança (risco de estrangulamento).** Se a criança tiver alergia, reforce que nossas persianas acumulam bem menos poeira e ácaro que cortinas de tecido.
+- **Bebê:** Blackout com mecanismo de segurança sem cordão — ajuda a criar rotina de sono e facilita as sonecas durante o dia.
+- **Hóspedes:** Rolô Translúcida ou Blackout — pode ser mais simples que o quarto principal, mas o escurecimento agrada o hóspede.
+- **Com ar-condicionado / preocupação térmica:** Blackout (principalmente na variação Vedação Total) — ajuda a isolar a temperatura e reduzir a perda de ar frio/quente pela janela.
+
+**COZINHA (nunca recomende cortina de tecido: absorve gordura e odor):**
+- **Fechada:** Rolô Tela Solar ou Horizontal PVC — resistem a umidade, gordura e calor, e são fáceis de limpar.
+- **Integrada/americana:** Horizontal de Alumínio ou Double Vision — precisa harmonizar visualmente com a sala, além de cumprir a função técnica.
+- **Janela sobre a pia:** Rolô compacta ou Horizontal de Alumínio, fáceis de limpar e resistentes a respingos.
+- **Muita luz da manhã:** Tela Solar (filtra luz e UV mantendo parte da visão) em vez de Blackout — cozinha é usada de dia, bloquear 100% raramente é o objetivo.
+- **Pequena:** Rolô ou Horizontal — ocupam menos espaço visual e mantêm a sensação de amplitude.
+
+**BANHEIRO / LAVABO:**
+- **Regra geral obrigatória:** SEMPRE material sintético — Rolô (tecido técnico), Horizontal PVC ou Horizontal Alumínio. **NUNCA recomende tecido natural em banheiro em nenhuma hipótese** — retém umidade e favorece mofo. Modelo mais indicado: Rolô.
+- **Com visibilidade da rua:** Rolô Blackout (privacidade total) ou Double Vision (alterna entre visão e privacidade). Nesse caso o produto deixa de ser estético e vira praticamente obrigatório.
+- **Espelho com reflexo direto de luz:** Horizontal de Alumínio (permite ajuste fino do ângulo das lâminas) ou Blackout, pra controlar o reflexo incômodo.
+- **Janela pequena ou basculante:** Rolô compacta. Lembre o cliente de prever sobra lateral no vão, pra reduzir a entrada de luz pelas frestas.
+- **Suíte com área externa/jardim de inverno:** Horizontal de Alumínio ou PVC — resistem à umidade constante e são fáceis de manter.
+
 ### REGRAS IMPORTANTES DE IDENTIDADE E SERVIÇO:
 - **NUNCA diga ou dê a entender que a empresa fica em Juiz de Fora (MG).** Caso perguntem sobre a nossa localização física, diga apenas que somos uma fábrica de fabricação própria nacional que atende e entrega em todo o Brasil sob medida de forma extremamente ágil e segura!
 - **NÃO FAZEMOS INSTALAÇÃO:** Deixe muito claro, caso o cliente pergunte ou o assunto surja, que **nós NÃO realizamos o serviço de instalação**. Nós fabricamos e enviamos o produto sob medida completo, pronto para ser instalado de forma muito simples e fácil pelo próprio cliente (no formato "faça você mesmo"), acompanhado de suportes, manuais e guias práticos de instalação.
@@ -275,6 +310,33 @@ def is_purchase_intent(message: str, conversation: list = None) -> bool:
         return True
 
     return False
+
+
+def is_handoff_request(message: str) -> bool:
+    """
+    Detecta se o lead está pedindo explicitamente para falar com um atendente humano
+    (em vez de continuar com a IA). Usado para pausar as respostas automáticas do
+    agente e notificar o dono do negócio pra assumir a conversa manualmente.
+    """
+    if not message:
+        return False
+
+    message_lower = message.lower()
+
+    handoff_phrases = [
+        "falar com atendente", "falar com um atendente", "falar com uma pessoa",
+        "falar com humano", "falar com um humano", "quero um atendente",
+        "atendente humano", "atendimento humano", "não quero falar com robô",
+        "nao quero falar com robo", "não quero falar com um robô",
+        "quero falar com alguém de verdade", "quero falar com alguem de verdade",
+        "me transfere pra um atendente", "me transfere para um atendente",
+        "quero um vendedor", "falar com vendedor", "falar com um vendedor",
+        "isso é um robô", "isso e um robo", "você é um robô", "voce e um robo",
+        "quero suporte humano", "falar com gerente", "falar com o responsável",
+        "falar com o responsavel", "chama o dono", "quero falar com o dono"
+    ]
+
+    return any(kw in message_lower for kw in handoff_phrases)
 
 
 def format_checkout_message(url: str = CHECKOUT_LINK) -> str:
