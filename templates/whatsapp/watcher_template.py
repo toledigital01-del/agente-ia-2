@@ -45,6 +45,14 @@ INSTANCE_NAME = "meu-agente"
 OWNER_PHONE = "{{OWNER_PHONE}}"  # Recebe alertas quando um lead pede atendimento humano
 POLL_INTERVAL = 3  # segundos
 
+# Watchdog de conexão: a Evolution API pode entrar em "estado zumbi" — o
+# connectionState continua dizendo "open" (isso vem do banco), mas o socket do
+# WhatsApp morreu e nenhuma mensagem nova chega. Sem isso o agente fica mudo por
+# horas sem nenhum erro no log (aconteceu em 2026-07-28: 8h fora do ar).
+HEALTH_CHECK_EVERY = 100      # iterações (~5 min com POLL_INTERVAL=3)
+HEALTH_FAIL_THRESHOLD = 2     # falhas seguidas antes de reiniciar a instância
+HEALTH_RESTART_COOLDOWN = 600 # segundos mínimos entre dois restarts automáticos
+
 STATE_FILE = Path.home() / "meu-agente" / "watcher_state.json"
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -442,6 +450,66 @@ def check_asaas_payment_status(payment_link_id: str) -> str:
         return "NONE"
 
 
+def get_owner_jid() -> str:
+    """Descobre o número da própria instância (usado como alvo da sonda de saúde)."""
+    try:
+        result = evolution_request("/instance/fetchInstances")
+        instances = result if isinstance(result, list) else []
+        for inst in instances:
+            if inst.get("name") == INSTANCE_NAME or inst.get("instanceName") == INSTANCE_NAME:
+                jid = inst.get("ownerJid", "")
+                return jid.split("@")[0] if jid else ""
+    except Exception as e:
+        logger.warning(f"Não foi possível descobrir o ownerJid da instância: {e}")
+    return ""
+
+
+def is_evolution_socket_alive(owner_number: str) -> bool:
+    """
+    Testa se o socket do WhatsApp está realmente vivo.
+
+    NÃO usa /instance/connectionState: esse endpoint lê o estado salvo no banco e
+    responde "open" mesmo com o socket morto. /chat/fetchProfile força uma consulta
+    real ao WhatsApp (leva ~1-2s e devolve dados frescos), então falha/trava quando
+    a conexão caiu de verdade.
+    """
+    if not owner_number:
+        return True  # sem alvo pra sondar, não dá pra afirmar que caiu
+
+    url = f"{EVOLUTION_URL}/chat/fetchProfile/{INSTANCE_NAME}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"number": owner_number}).encode(),
+        headers={"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read())
+            return bool(data.get("wuid"))
+    except Exception as e:
+        logger.warning(f"⚠️  Sonda de saúde da Evolution falhou: {e}")
+        return False
+
+
+def restart_evolution_instance() -> bool:
+    """Reinicia a instância na Evolution API reaproveitando as credenciais salvas (sem QR)."""
+    url = f"{EVOLUTION_URL}/instance/restart/{INSTANCE_NAME}"
+    req = urllib.request.Request(
+        url,
+        data=b"",
+        headers={"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp.read()
+        return True
+    except Exception as e:
+        logger.error(f"❌ Falha ao reiniciar a instância na Evolution API: {e}")
+        return False
+
+
 def check_human_handoff(phone: str, name: str, text: str) -> bool:
     """
     Verifica se a IA deve ficar de fora dessa mensagem porque o lead está em
@@ -558,7 +626,21 @@ def transcribe_audio_base64(base64_str: str) -> str:
                     groq_key = line.split("=", 1)[1].strip()
                 elif line.startswith("OPENAI_API_KEY="):
                     openai_key = line.split("=", 1)[1].strip()
-                    
+
+        # O config.json é o lugar canônico das chaves deste projeto — o .env acima
+        # pertence a outra ferramenta e pode simplesmente não existir no servidor
+        # (foi o que deixou a transcrição de áudio muda no VPS até 2026-07-28).
+        if not groq_key and not openai_key:
+            p_conf = Path.home() / ".meu-agente" / "config.json"
+            if p_conf.exists():
+                try:
+                    conf = json.loads(p_conf.read_text(encoding="utf-8"))
+                    groq_key = conf.get("groq_api_key", "") or ""
+                    openai_key = conf.get("openai_api_key", "") or ""
+                except Exception as e:
+                    logger.warning(f"Não foi possível ler chaves de transcrição do config.json: {e}")
+
+
         # Configurar endpoints e modelo
         if groq_key:
             api_url = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -638,11 +720,47 @@ def watch():
     iteration_counter = 0
     first_run = True
 
+    owner_number = get_owner_jid()
+    if owner_number:
+        logger.info(f"🩺 Watchdog de conexão ativo (sondando {owner_number} a cada ~{HEALTH_CHECK_EVERY * POLL_INTERVAL // 60} min).")
+    else:
+        logger.warning("🩺 Watchdog de conexão inativo — não foi possível descobrir o número da instância.")
+    health_failures = 0
+    last_restart_at = 0
+
     while True:
         try:
             # Processar lembretes de pagamento a cada 200 iterações (aproximadamente a cada 10 minutos)
             if iteration_counter % 200 == 0:
                 process_payment_followups()
+
+            # Watchdog: detecta o "estado zumbi" da Evolution (socket morto com
+            # connectionState mentindo "open") e reconecta sozinho.
+            if owner_number and iteration_counter > 0 and iteration_counter % HEALTH_CHECK_EVERY == 0:
+                if is_evolution_socket_alive(owner_number):
+                    if health_failures:
+                        logger.info("🩺 Conexão com o WhatsApp normalizada.")
+                    health_failures = 0
+                else:
+                    health_failures += 1
+                    logger.warning(f"🩺 Sonda falhou ({health_failures}/{HEALTH_FAIL_THRESHOLD}).")
+                    if health_failures >= HEALTH_FAIL_THRESHOLD:
+                        if int(time.time()) - last_restart_at < HEALTH_RESTART_COOLDOWN:
+                            logger.warning("🩺 Reinício automático adiado (cooldown ativo).")
+                        else:
+                            logger.error("🩺 Conexão do WhatsApp caiu silenciosamente — reiniciando a instância...")
+                            last_restart_at = int(time.time())
+                            health_failures = 0
+                            if restart_evolution_instance():
+                                time.sleep(15)
+                                if is_evolution_socket_alive(owner_number):
+                                    logger.info("✅ Instância reconectada automaticamente.")
+                                    if OWNER_PHONE:
+                                        send_whatsapp(OWNER_PHONE, "🩺 A conexão do WhatsApp do agente caiu e foi restabelecida automaticamente. Nenhuma ação necessária.")
+                                else:
+                                    logger.error("❌ Reinício não restabeleceu a conexão — pode ser necessário escanear o QR Code novamente.")
+                                    if OWNER_PHONE:
+                                        send_whatsapp(OWNER_PHONE, "🚨 A conexão do WhatsApp do agente caiu e o reinício automático NÃO resolveu. Provavelmente é preciso escanear o QR Code de novo — o agente está sem responder.")
             iteration_counter += 1
 
             messages = fetch_messages(count=20)
