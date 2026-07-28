@@ -24,6 +24,7 @@ from datetime import datetime
 # Carregar templates compartilhados
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
 from agent_core_template import call_ai, is_purchase_intent, is_handoff_request, format_checkout_message, SYSTEM_PROMPT, CHECKOUT_LINK
+import client_config
 from sessions_template import init_db, load_session, save_session, create_lead, add_message, mark_checkout_sent, save_metadata, get_metadata
 
 # Inicializar o banco de dados automaticamente ao importar o módulo
@@ -59,7 +60,7 @@ def extract_cep(text: str) -> str:
 def get_shipping_quote(recipient_cep: str, width_m: float, height_m: float, quantity: int = 1) -> dict:
     """Consulta frete na API da Frenet."""
     url = "https://api.frenet.com.br/shipping/quote"
-    token = "6C05BE26R0E91R4D4FR8B11R94A046DD50A1"
+    token = client_config.get("frenet_token", "")
     
     recipient_cep = "".join(filter(str.isdigit, recipient_cep))
     if len(recipient_cep) != 8:
@@ -112,10 +113,10 @@ def get_shipping_quote(recipient_cep: str, width_m: float, height_m: float, quan
         return {"error": str(e)}
 
 # Configurações de trigger ({{placeholders}} preenchidos durante setup)
-CHECKOUT_LINK = "{{CHECKOUT_LINK}}"
-TRIGGER_EXACT = "{{TRIGGER_EXACT}}"
+CHECKOUT_LINK = client_config.get("checkout_link", "")
+TRIGGER_EXACT = client_config.get("lead_trigger_phrase", "")
 TRIGGER_KEYWORDS = [
-    "{{PRODUCT_NAME}}",
+    client_config.get("product_name", ""),
     "dúvida",
     "informação",
     "saiba mais",
@@ -142,7 +143,7 @@ TRIGGER_KEYWORDS = [
     "boa noite"
 ]
 
-DB_PATH = "~/meu-agente/dados.sqlite"
+DB_PATH = str(client_config.DB_PATH)
 
 
 def is_trigger(text: str) -> bool:

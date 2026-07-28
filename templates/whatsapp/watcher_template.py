@@ -25,12 +25,15 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+sys.path.insert(0, str(Path(__file__).parent))
+import client_config
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(Path.home() / "meu-agente" / "watcher.log", encoding="utf-8")
+        logging.FileHandler(client_config.LOG_FILE, encoding="utf-8")
     ]
 )
 logger = logging.getLogger(__name__)
@@ -39,10 +42,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from agent import handle_message, is_trigger, is_handoff_request
 
 # ── Configuração (preenchida pelo setup) ──────────────────────────────────────
-EVOLUTION_URL = "http://localhost:8080"
-EVOLUTION_API_KEY = "{{EVOLUTION_API_KEY}}"
-INSTANCE_NAME = "meu-agente"
-OWNER_PHONE = "{{OWNER_PHONE}}"  # Recebe alertas quando um lead pede atendimento humano
+EVOLUTION_URL = client_config.get("evolution_url", "http://localhost:8080")
+EVOLUTION_API_KEY = client_config.require("evolution_api_key")
+INSTANCE_NAME = client_config.require("instance_name")
+OWNER_PHONE = client_config.get("owner_phone", "")  # Recebe alertas de atendimento humano
 POLL_INTERVAL = 3  # segundos
 
 # Watchdog de conexão: a Evolution API pode entrar em "estado zumbi" — o
@@ -53,7 +56,7 @@ HEALTH_CHECK_EVERY = 100      # iterações (~5 min com POLL_INTERVAL=3)
 HEALTH_FAIL_THRESHOLD = 2     # falhas seguidas antes de reiniciar a instância
 HEALTH_RESTART_COOLDOWN = 600 # segundos mínimos entre dois restarts automáticos
 
-STATE_FILE = Path.home() / "meu-agente" / "watcher_state.json"
+STATE_FILE = client_config.STATE_FILE
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 

@@ -50,4 +50,7 @@ logs/
 
 # Chaves de API soltas e configurações locais do Claude Code
 API-*.txt
+Senha*.txt
+senha*.txt
+*senha*.txt
 .claude/

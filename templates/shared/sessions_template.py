@@ -10,7 +10,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-DB_PATH = "~/meu-agente/dados.sqlite"
+import client_config
+DB_PATH = str(client_config.DB_PATH)  # banco isolado por cliente
 
 
 def _db():
