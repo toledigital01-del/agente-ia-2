@@ -21,12 +21,16 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(Path.home() / "meu-agente" / "watcher.log")
+        logging.FileHandler(Path.home() / "meu-agente" / "watcher.log", encoding="utf-8")
     ]
 )
 logger = logging.getLogger(__name__)
@@ -469,18 +473,21 @@ def process_payment_followups():
             
             # Lembrete de Distração (Após 2 Horas / 7200 segundos)
             if elapsed >= 7200 and followup_status == "0":
-                sessions.save_metadata(lead_id, "followup_status", "1")
                 logger.info(f"⏳ Enviando lembrete de cobrança (2 horas) para {name} ({phone})")
                 msg_2h = f"Olá, {name}! Vi que o seu link de checkout seguro para as persianas já está pronto, mas o pagamento ainda não foi confirmado. Ficou alguma dúvida ou precisa de ajuda para finalizar? 😊"
-                send_whatsapp(phone, msg_2h)
-                
+                # Só marca como enviado se o envio realmente funcionou — senão o lead
+                # fica sem cobrança pra sempre caso a Evolution API falhe nesse instante
+                # (o loop tenta de novo no próximo ciclo enquanto o status continuar "0").
+                if send_whatsapp(phone, msg_2h):
+                    sessions.save_metadata(lead_id, "followup_status", "1")
+
             # Lembrete de Escassez / Fila da Fábrica (Após 24 Horas / 86400 segundos)
             elif elapsed >= 86400 and followup_status == "1":
-                sessions.save_metadata(lead_id, "followup_status", "2")
                 logger.info(f"⏳ Enviando lembrete de cobrança (24 horas) para {name} ({phone})")
                 checkout_url = sessions.get_metadata(lead_id, "asaas_checkout_url", "agilcortinasepersianas.com.br/loja")
                 msg_24h = f"Olá, {name}! Passando para lembrar que o lote de produção da nossa fábrica fecha hoje. Se você quiser garantir que as suas persianas entrem na fabricação desta semana para chegarem o quanto antes, basta finalizar o pagamento pelo link seguro: {checkout_url} 🚀"
-                send_whatsapp(phone, msg_24h)
+                if send_whatsapp(phone, msg_24h):
+                    sessions.save_metadata(lead_id, "followup_status", "2")
                 
     except Exception as e:
         logger.error(f"Erro no processamento de followups de cobrança: {e}\n{traceback.format_exc()}")
@@ -517,12 +524,14 @@ def transcribe_audio_base64(base64_str: str) -> str:
             api_key = openai_key
             model = "whisper-1"
         else:
-            # Se não houver no watch, tenta usar a ai_api_key do config.json como fallback
+            # Se não houver no watch, só reaproveita a ai_api_key do config.json quando o
+            # provider configurado for realmente "openai" — chaves Anthropic/Gemini não
+            # funcionam no endpoint de transcrição da OpenAI e falhariam com 401 silencioso.
             p_conf = Path.home() / ".meu-agente" / "config.json"
             if p_conf.exists():
                 config_data = json.loads(p_conf.read_text(encoding="utf-8"))
-                # Pega a chave OpenAI se houver (mas de forma genérica)
-                openai_key = config_data.get("ai_api_key", "")
+                if config_data.get("ai_provider") == "openai":
+                    openai_key = config_data.get("ai_api_key", "")
                 if openai_key and len(openai_key) > 30: # Evitar chaves curtas
                     api_url = "https://api.openai.com/v1/audio/transcriptions"
                     api_key = openai_key

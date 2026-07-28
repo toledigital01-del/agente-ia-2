@@ -200,7 +200,7 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         h_float = float(saved_h)
         area = w_float * h_float
         charged_area = max(1.80, area) # Área mínima cobrada de 1.80m² igual à Fácil Persianas!
-        
+
         # Preços Fácil Persianas
         p_blackout = charged_area * 147.39
         p_solar = charged_area * 186.44
