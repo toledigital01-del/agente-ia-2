@@ -34,6 +34,12 @@ SYSTEM_PROMPT = """Você é o assistente virtual da **Ágil Cortinas e Persianas
    - Sugira o modelo ideal para o ambiente (ex: Blackout para quarto, Tela Solar para varanda) e pergunte se ele prefere esse modelo.
    - *Aguarde o cliente responder.*
 
+1.1. **NEED - Variação de Tecido/Acabamento (OBRIGATÓRIO quando o modelo tiver mais de uma opção):**
+   - **Se o cliente confirmar um modelo que possui variações de tecido/acabamento (ver tabela 🧵 abaixo) e ele NÃO tiver especificado qual variação exata quer, você DEVE apresentar as opções daquele modelo (com uma frase curta explicando a diferença de cada uma) e perguntar qual ele prefere.**
+   - **NUNCA escolha ou assuma uma variação sozinho** (ex: nunca decida sozinho entre "Texturizado" e "Tecido Liso" do Blackout) — sempre pergunte.
+   - Só avance para a etapa de medidas depois que a variação estiver definida.
+   - *Aguarde o cliente responder.*
+
 2. **NEED - Coleta das Medidas:**
    - Peça apenas as medidas aproximadas do vão (Largura x Altura).
    - *Aguarde o cliente responder.*
@@ -62,6 +68,26 @@ SYSTEM_PROMPT = """Você é o assistente virtual da **Ágil Cortinas e Persianas
 
 7. **FECHAMENTO - Link de Checkout:**
    - Ofereça gerar o link de pagamento seguro direto pela nossa conta Asaas para o checkout.
+
+### 🧵 VARIAÇÕES DE TECIDO/ACABAMENTO POR MODELO (baseado no catálogo real da loja):
+Sempre que o cliente escolher um modelo abaixo sem especificar a variação, apresente as opções listadas (com a diferença de cada uma) e pergunte qual ele prefere:
+
+- **Rolô Blackout** → "Texturizado" (efeito relevo, mais elegante) | "Tecido Liso" (visual clean, minimalista) | "Vedação Total" (bloqueio 100% da luz, zero fresta)
+- **Rolô Tela Solar** → "1%" (mais escura, mais proteção solar) | "3%" (equilíbrio entre luz e proteção) | "5%" (mais clara, mais entrada de luz natural)
+- **Rolô Translúcida** → não tem variação de tecido, só de cor (Branco, Bege, Cinza, etc.)
+- **Romana Blackout** → "Texturizado" | "Tecido Liso"
+- **Romana Tela Solar** → "1%" | "3%" | "5%"
+- **Romana Translúcida** → só variação de cor
+- **Double Vision** → "Semi Blackout" (mais opaca, mais privacidade) | "Translúcida" (mais luz, efeito zebrado suave)
+- **Painel Blackout** → "Texturizado" | "Tecido Liso"
+- **Painel Tela Solar** → "1%" | "3%" | "5%"
+- **Painel Translúcido** → só variação de cor
+- **Persiana Horizontal Alumínio** → "16mm" (lâminas finas, mais discretas) | "25mm" (padrão mais comum) | "50mm" (lâminas largas, visual mais robusto)
+- **Persiana Horizontal PVC** → só 50mm
+- **Persiana Horizontal Madeira Sintética** → só 50mm
+- **Tela Mosquiteira** → "Retrátil" (enrola quando não usa) | "Fixa com Tramela/Trava" | "Fixa com Perfil U"
+- **Toldo Vertical** → "Tecido Blackout" | "Tecido Screen 1%" | "Tecido Screen 3%" | "Tecido Screen 5%"
+- **Toldo** → "Vertical" | "Retrátil Articulado"
 
 ### REGRAS IMPORTANTES DE IDENTIDADE E SERVIÇO:
 - **NUNCA diga ou dê a entender que a empresa fica em Juiz de Fora (MG).** Caso perguntem sobre a nossa localização física, diga apenas que somos uma fábrica de fabricação própria nacional que atende e entrega em todo o Brasil sob medida de forma extremamente ágil e segura!
@@ -180,14 +206,27 @@ def call_gemini(messages: list, max_tokens: int) -> str:
 
 
 def call_anthropic(messages: list, max_tokens: int) -> str:
-    """Chama Anthropic Claude (formato próprio)."""
+    """Chama Anthropic Claude (formato próprio).
+
+    A API da Anthropic só aceita roles "user"/"assistant" na lista de mensagens
+    (diferente de OpenAI/Gemini) — instruções injetadas com role "system" no meio
+    da conversa precisam ser incorporadas ao parâmetro "system" separado.
+    """
     url = "https://api.anthropic.com/v1/messages"
+
+    system_parts = [SYSTEM_PROMPT]
+    clean_messages = []
+    for m in messages:
+        if m.get("role") == "system":
+            system_parts.append(m.get("content", ""))
+        else:
+            clean_messages.append(m)
 
     data = {
         "model": AI_MODEL,
         "max_tokens": max_tokens,
-        "system": SYSTEM_PROMPT,
-        "messages": messages
+        "system": "\n\n".join(system_parts),
+        "messages": clean_messages
     }
 
     headers = {
@@ -208,7 +247,9 @@ def call_anthropic(messages: list, max_tokens: int) -> str:
             result = json.loads(response.read())
             return result["content"][0]["text"]
     except urllib.error.HTTPError as e:
-        return f"Erro Anthropic: {e.reason}"
+        detail = e.read().decode("utf-8", errors="replace")
+        print(f"[ERRO Anthropic] {e.code} {e.reason}: {detail}")
+        return "Desculpe, tive um probleminha técnico agora. Pode repetir sua última mensagem, por favor? 🙏"
 
 
 def is_purchase_intent(message: str, conversation: list = None) -> bool:
