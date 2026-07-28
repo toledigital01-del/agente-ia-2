@@ -47,3 +47,7 @@ logs/
 /dist
 /build
 *.egg-info/
+
+# Chaves de API soltas e configurações locais do Claude Code
+API-*.txt
+.claude/
