@@ -12,6 +12,10 @@ import subprocess
 import sys
 import platform
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 OS = platform.system()  # "Windows", "Darwin", "Linux"
 
 

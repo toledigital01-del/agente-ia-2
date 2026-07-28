@@ -19,6 +19,10 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, str(Path(__file__).parent))
 from config_manager import get as cfg_get, save as cfg_save
 
@@ -61,13 +65,14 @@ def get_connection_state(instance: str) -> str:
     )
 
 
-def show_qr_terminal(qr_data: str):
-    """Tenta exibir QR Code no terminal via biblioteca qrcode."""
-    raw = qr_data.split(",")[-1]
+def show_qr_terminal(qr_code_raw: str):
+    """Tenta exibir QR Code no terminal via biblioteca qrcode (a partir do texto bruto do pairing)."""
+    if not qr_code_raw:
+        return False
     try:
         import qrcode
         qr = qrcode.QRCode(border=1)
-        qr.add_data(raw if len(raw) < 100 else base64.b64decode(raw).decode())
+        qr.add_data(qr_code_raw)
         qr.make(fit=True)
         print("\n" + "=" * 60)
         print("QR CODE — escaneie com o WhatsApp:")
@@ -78,9 +83,9 @@ def show_qr_terminal(qr_data: str):
         return False
 
 
-def show_qr_image(qr_data: str):
+def show_qr_image(qr_data_url: str):
     """Salva QR Code como PNG e abre com o visualizador padrão do sistema."""
-    raw = qr_data.split(",")[-1]
+    raw = qr_data_url.split(",")[-1]
     try:
         img_bytes = base64.b64decode(raw)
     except Exception:
@@ -106,11 +111,14 @@ def show_qr_image(qr_data: str):
         return True
 
 
-def display_qr(qr_data: str):
-    """Exibe QR: tenta terminal primeiro, depois imagem."""
-    if not show_qr_terminal(qr_data):
-        print("\n  (instale 'qrcode' para ver no terminal: pip install qrcode)")
-        show_qr_image(qr_data)
+def display_qr(qr_code_raw: str, qr_base64: str):
+    """Exibe QR: tenta terminal primeiro (a partir do texto bruto), depois imagem."""
+    if not show_qr_terminal(qr_code_raw):
+        if not qr_code_raw:
+            print("\n  (não veio o texto bruto do QR na resposta da API)")
+        else:
+            print("\n  (instale 'qrcode' para ver no terminal: pip install qrcode)")
+        show_qr_image(qr_base64)
     print("\nComo escanear:")
     print("  WhatsApp → Configurações → Aparelhos Conectados → Conectar Aparelho")
 
@@ -154,13 +162,15 @@ def main(instance_name: str = None):
     print("\nGerando QR Code...")
     qr_result = call_api(f"/instance/connect/{instance_name}")
 
-    qr_data = (
+    qrcode_obj = qr_result.get("qrcode") if isinstance(qr_result.get("qrcode"), dict) else {}
+    qr_code_raw = qr_result.get("code") or qrcode_obj.get("code")
+    qr_base64 = (
         qr_result.get("base64")
-        or (qr_result.get("qrcode") or {}).get("base64")
+        or qrcode_obj.get("base64")
         or (qr_result.get("qrcode") if isinstance(qr_result.get("qrcode"), str) else None)
     )
 
-    if not qr_data:
+    if not qr_code_raw and not qr_base64:
         print(f"\nNão foi possível obter QR Code.")
         print(f"Resposta da API: {qr_result}")
         print("\nDicas:")
@@ -168,7 +178,7 @@ def main(instance_name: str = None):
         print("  - Verifique a API key em: python setup/install_evolution.py")
         sys.exit(1)
 
-    display_qr(qr_data)
+    display_qr(qr_code_raw, qr_base64)
 
     # Aguardar conexão
     print("\nAguardando scan (até 90 segundos)...")

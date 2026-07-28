@@ -5,6 +5,10 @@ test_agent.py — Testa o agente simulando uma mensagem
 import sys
 from pathlib import Path
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 def main():
     print("=" * 60)
     print("🧪 Testando Agente")

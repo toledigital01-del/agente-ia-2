@@ -11,6 +11,10 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, str(Path(__file__).parent))
 from config_manager import get as cfg_get, save as cfg_save
 

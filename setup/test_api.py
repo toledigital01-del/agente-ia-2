@@ -6,6 +6,10 @@ import sys
 import argparse
 import json
 
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 def test_openai(api_key):
     """Testa OpenAI API."""
     import urllib.request
