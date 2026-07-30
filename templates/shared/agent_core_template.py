@@ -212,6 +212,20 @@ def is_handoff_request(message: str) -> bool:
     return any(kw in message_lower for kw in handoff_phrases)
 
 
+def is_toldo_request(message: str) -> bool:
+    """
+    Detecta se o lead está perguntando sobre Toldo — produto sem preço
+    calculado automaticamente (sem tabela de referência de mercado). Usado
+    pra acionar o mesmo encaminhamento humano do is_handoff_request, já que a
+    IA não deve inventar preço de toldo.
+    """
+    if not message:
+        return False
+
+    message_lower = message.lower()
+    return "toldo" in message_lower
+
+
 def format_checkout_message(url: str = CHECKOUT_LINK) -> str:
     """Formata mensagem com link de checkout."""
     return f"""Perfeito! Passei tudo aqui. Deixa eu enviar nosso checkout pra você:

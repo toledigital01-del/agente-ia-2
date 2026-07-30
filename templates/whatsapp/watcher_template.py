@@ -39,7 +39,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, str(Path(__file__).parent))
-from agent import handle_message, is_trigger, is_handoff_request
+from agent import handle_message, is_trigger, is_handoff_request, is_toldo_request
 
 # ── Configuração (preenchida pelo setup) ──────────────────────────────────────
 EVOLUTION_URL = client_config.get("evolution_url", "http://localhost:8080")
@@ -542,11 +542,30 @@ def check_human_handoff(phone: str, name: str, text: str) -> bool:
             )
         return True
 
+    if is_toldo_request(text):
+        sessions.save_metadata(lead_id, "human_handoff", "1")
+        sessions.save_metadata(lead_id, "human_handoff_at", str(int(time.time())))
+        logger.info(f"🏕️ {name} ({phone}) perguntou sobre Toldo (sem preço automático). Pausando IA e notificando o responsável.")
+        send_whatsapp(phone, "Toldo é orçado sob consulta com o nosso setor especializado! Já vou te conectar com um atendente pra fechar os detalhes certinho. 🙋")
+        if OWNER_PHONE:
+            send_whatsapp(
+                OWNER_PHONE,
+                f"🏕️ {name} ({phone}) perguntou sobre TOLDO (esse item não tem preço calculado automaticamente).\nMensagem do cliente: \"{text}\"\n\nA IA foi pausada para esse lead — responda direto por aqui no WhatsApp com o orçamento de toldo."
+            )
+        return True
+
     return False
 
 
 def process_payment_followups():
-    """Varre leads e processa lembretes de cobrança ativa de forma assíncrona/periódica."""
+    """Varre leads e processa lembretes de cobrança ativa de forma assíncrona/periódica.
+
+    Anti-bloqueio: manda no máximo UM lembrete por chamada — como essa função já
+    roda a cada ~10 minutos (ver watch()), isso garante um espaçamento bem maior
+    que o mínimo de 30-90s entre mensagens automáticas pra leads diferentes, sem
+    nunca travar o loop principal (que precisa continuar respondendo clientes em
+    tempo real). O restante dos leads elegíveis é atendido no próximo ciclo.
+    """
     try:
         import sessions
         conn = sessions._db()
@@ -581,7 +600,7 @@ def process_payment_followups():
                 sessions.save_metadata(lead_id, "followup_status", "PAID")
                 logger.info(f"🎉 Pagamento confirmado para o lead {name} ({phone})!")
                 send_whatsapp(phone, f"Oba, {name}! 🎉 Confirmamos o recebimento do seu pagamento. O seu pedido de cortinas/persianas sob medida já foi encaminhado para o nosso setor de fabricação! Em breve te enviaremos o código de rastreamento por aqui. Qualquer dúvida, estou à disposição! 💪")
-                continue
+                return  # anti-bloqueio: só 1 envio por ciclo (ver docstring)
                 
             # 2. Se não foi pago, calcular o tempo decorrido e enviar lembrete correspondente
             checkout_sent_at = int(checkout_sent_at_str)
@@ -596,6 +615,7 @@ def process_payment_followups():
                 # (o loop tenta de novo no próximo ciclo enquanto o status continuar "0").
                 if send_whatsapp(phone, msg_2h):
                     sessions.save_metadata(lead_id, "followup_status", "1")
+                    return  # anti-bloqueio: só 1 envio por ciclo (ver docstring)
 
             # Lembrete de Escassez / Fila da Fábrica (Após 24 Horas / 86400 segundos)
             elif elapsed >= 86400 and followup_status == "1":
@@ -604,7 +624,8 @@ def process_payment_followups():
                 msg_24h = f"Olá, {name}! Passando para lembrar que o lote de produção da nossa fábrica fecha hoje. Se você quiser garantir que as suas persianas entrem na fabricação desta semana para chegarem o quanto antes, basta finalizar o pagamento pelo link seguro: {checkout_url} 🚀"
                 if send_whatsapp(phone, msg_24h):
                     sessions.save_metadata(lead_id, "followup_status", "2")
-                
+                    return  # anti-bloqueio: só 1 envio por ciclo (ver docstring)
+
     except Exception as e:
         logger.error(f"Erro no processamento de followups de cobrança: {e}\n{traceback.format_exc()}")
 

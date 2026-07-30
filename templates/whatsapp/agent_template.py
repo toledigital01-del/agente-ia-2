@@ -16,6 +16,7 @@ Use como: python3 agent.py --test
 
 import sys
 import json
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -23,9 +24,9 @@ from datetime import datetime
 
 # Carregar templates compartilhados
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
-from agent_core_template import call_ai, is_purchase_intent, is_handoff_request, format_checkout_message, SYSTEM_PROMPT, CHECKOUT_LINK
+from agent_core_template import call_ai, is_purchase_intent, is_handoff_request, is_toldo_request, format_checkout_message, SYSTEM_PROMPT, CHECKOUT_LINK, SESSION_TTL
 import client_config
-from sessions_template import init_db, load_session, save_session, create_lead, add_message, mark_checkout_sent, save_metadata, get_metadata
+from sessions_template import init_db, load_session, save_session, create_lead, add_message, mark_checkout_sent, save_metadata, get_metadata, get_lead_history
 
 # Inicializar o banco de dados automaticamente ao importar o módulo
 init_db()
@@ -145,6 +146,132 @@ TRIGGER_KEYWORDS = [
 
 DB_PATH = str(client_config.DB_PATH)
 
+# ── Tabela de preços de referência (coletada da Fácil Persianas em 2026-07-29) ─
+# Pontos reais (área em m², preço em R$), largura fixa em 100cm (variando a
+# altura), direto do site oficial. Confirmado que o preço de mercado NÃO é uma
+# reta simples de R$/m² (tag "autopriced-by-table-pricing" no próprio site) —
+# a taxa por m² adicional varia de trecho pra trecho (de ~R$26 a ~R$72/m² só
+# na faixa de 1,2 a 1,8m² do Blackout, por exemplo). Por isso interpolamos
+# entre pontos reais em vez de multiplicar por uma taxa fixa.
+# Fonte completa (mais categorias e larguras): docs/tabela_precos_referencia.json
+PRECO_ROLO_BLACKOUT = [
+    (0.36, 147.39), (1.20, 264.91), (1.43, 267.78), (1.50, 272.83), (1.58, 278.56),
+    (1.66, 284.34), (1.74, 290.07), (1.80, 294.39), (1.90, 301.58), (2.00, 281.75),
+    (2.10, 288.32), (2.20, 294.88), (2.30, 301.45), (2.40, 308.00), (2.50, 314.57),
+    (2.65, 406.76), (2.70, 410.23), (2.90, 424.09),
+]
+PRECO_ROLO_TELA_SOLAR = [
+    (0.36, 117.33), (1.20, 342.22), (1.43, 346.38), (1.50, 353.68), (1.58, 362.00),
+    (1.66, 370.34), (1.74, 378.71), (1.80, 384.94), (1.90, 395.36), (2.00, 472.11),
+    (2.10, 484.24), (2.20, 496.38), (2.30, 508.46), (2.40, 520.61), (2.50, 532.74),
+    (2.65, 731.80), (2.70, 738.69), (2.90, 766.21),
+]
+PRECO_DOUBLE_VISION = [
+    (0.36, 302.98), (1.20, 529.84), (1.43, 529.84), (1.50, 597.01), (1.90, 611.69),
+    (2.00, 767.31), (2.10, 814.78), (2.20, 833.58), (2.30, 852.40), (2.40, 871.19),
+    (2.50, 890.00), (2.65, 918.19), (2.70, 927.61),
+]
+
+
+def interpolar_preco(area_m2: float, pontos: list) -> float:
+    """Interpola linearmente o preço pra uma área, usando pontos reais (área, preço)
+    coletados de mercado. Extrapola pela inclinação do primeiro/último trecho se a
+    área ficar fora da faixa coletada."""
+    pontos = sorted(pontos)
+    if area_m2 <= pontos[0][0]:
+        return pontos[0][1]
+    if area_m2 >= pontos[-1][0]:
+        (a0, p0), (a1, p1) = pontos[-2], pontos[-1]
+    else:
+        for i in range(len(pontos) - 1):
+            a0, p0 = pontos[i]
+            a1, p1 = pontos[i + 1]
+            if a0 <= area_m2 <= a1:
+                break
+    taxa = (p1 - p0) / (a1 - a0)
+    return p0 + (area_m2 - a0) * taxa
+
+
+# ── Consulta de preço AO VIVO na Fácil Persianas (com fallback pra tabela estática) ──
+# A cor muda o preço de verdade no site deles (ex: Blackout Branca R$147,39 vs
+# Preta R$160,76 na mesma peça) — por isso buscamos o produto certo por cor,
+# não só por categoria. Se a busca ao vivo falhar por qualquer motivo (site
+# fora do ar, timeout, produto não encontrado), cai pra tabela estática
+# (PRECO_ROLO_BLACKOUT etc.) como rede de segurança.
+FACIL_PERSIANAS_BASE = "https://www.facilpersianas.com.br"
+
+CORES_CONHECIDAS = ["branco", "branca", "bege", "cinza", "preto", "preta", "marfim"]
+
+HANDLES_ROLO_BLACKOUT = {
+    "branco": "persiana-rolo-blackout-branca", "branca": "persiana-rolo-blackout-branca",
+    "bege": "persiana-rolo-blackout-bege",
+    "cinza": "persiana-rolo-blackout-cinza",
+    "preto": "persiana-rolo-blackout-preta", "preta": "persiana-rolo-blackout-preta",
+}
+HANDLES_ROLO_TELA_SOLAR = {
+    "branco": "persiana-rolo-tela-solar-3-branca", "branca": "persiana-rolo-tela-solar-3-branca",
+    "bege": "persiana-rolo-tela-solar-3-bege",
+    "cinza": "persiana-rolo-tela-solar-3-cinza",
+    "preto": "persiana-rolo-tela-solar-3-preta", "preta": "persiana-rolo-tela-solar-3-preta",
+}
+HANDLES_DOUBLE_VISION = {
+    "branco": "persiana-double-vision-semi-blackout-branca-acinzentada",
+    "branca": "persiana-double-vision-semi-blackout-branca-acinzentada",
+    "cinza": "persiana-double-vision-semi-blackout-cinza",
+    "preto": "persiana-double-vision-semi-blackout-preta", "preta": "persiana-double-vision-semi-blackout-preta",
+}
+
+
+def extract_color(text: str) -> str:
+    """Extrai o nome de cor conhecida de um texto (ex: 'branco', 'cinza')."""
+    text_lower = text.lower()
+    for cor in CORES_CONHECIDAS:
+        if cor in text_lower:
+            return cor
+    return None
+
+
+def buscar_preco_ao_vivo(handle: str, area_m2: float, timeout: int = 5) -> float:
+    """Busca o preço real no site da Fácil Persianas pra essa área (m²), via
+    interpolação entre as variantes (largura-altura) reais mais próximas.
+    Retorna None em qualquer falha — quem chamar precisa ter um fallback."""
+    if not handle:
+        return None
+    try:
+        url = f"{FACIL_PERSIANAS_BASE}/products/{handle}.json"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept": "application/json,text/html;q=0.9,*/*;q=0.8",
+            "Accept-Language": "pt-BR,pt;q=0.9",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        pontos = []
+        for v in data.get("product", {}).get("variants", []):
+            m = re.match(r"^(\d+)-(\d+)$", v.get("title", ""))
+            if not m:
+                continue
+            w_cm, h_cm = int(m.group(1)), int(m.group(2))
+            area = (w_cm / 100.0) * (h_cm / 100.0)
+            pontos.append((area, float(v["price"])))
+        if not pontos:
+            return None
+        return interpolar_preco(area_m2, pontos)
+    except Exception as e:
+        print(f"⚠️  Falha ao buscar preço ao vivo ({handle}): {e}")
+        return None
+
+
+def calcular_preco_modelo(handles_map: dict, tabela_fallback: list, charged_area: float, cor: str = None) -> float:
+    """Preço do modelo pra uma área/cor: tenta ao vivo primeiro, cai pra tabela
+    estática de referência se a busca ao vivo falhar."""
+    cor_norm = (cor or "branca").lower()
+    handle = handles_map.get(cor_norm) or handles_map.get("branca")
+    preco = buscar_preco_ao_vivo(handle, charged_area)
+    if preco is not None:
+        return preco
+    return interpolar_preco(charged_area, tabela_fallback)
+
 
 def is_trigger(text: str) -> bool:
     """Verifica se mensagem contém trigger phrase (Sempre ativa para responder a absolutamente qualquer mensagem)."""
@@ -182,10 +309,29 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
     if cep:
         save_metadata(lead_id, "cep", cep)
 
-    # 3. Carregar sessão existente ou criar nova
-    messages = load_session(lead_id) or []
+    cor = extract_color(text)
+    if cor:
+        save_metadata(lead_id, "cor", cor)
+
+    # 3. Carregar sessão ativa (cache "quente", expira em SESSION_TTL) ou,
+    # se ela já expirou, reconstruir o contexto a partir do histórico
+    # permanente salvo no banco — assim um lead que some e volta dias depois
+    # não recomeça do zero, e a IA consegue retomar de onde parou.
+    messages = load_session(lead_id)
+    resuming_after_gap = False
+    gap_seconds = 0
+    if messages is None:
+        history = get_lead_history(lead_id, limit=40)
+        if history:
+            # get_lead_history retorna do mais recente pro mais antigo — inverter
+            messages = [{"role": h["role"], "content": h["content"]} for h in reversed(history)]
+            gap_seconds = int(time.time()) - history[0]["ts"]
+            resuming_after_gap = gap_seconds > SESSION_TTL
+        else:
+            messages = []
 
     # 4. Adicionar mensagem do usuário
+
     user_message = {"role": "user", "content": text}
     messages.append(user_message)
     add_message(lead_id, "user", text)
@@ -194,23 +340,39 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
     saved_w = get_metadata(lead_id, "width")
     saved_h = get_metadata(lead_id, "height")
     saved_cep = get_metadata(lead_id, "cep")
+    saved_cor = get_metadata(lead_id, "cor")
 
     prompt_injection = []
+
+    if resuming_after_gap:
+        if gap_seconds >= 86400:
+            gap_desc = f"{gap_seconds / 86400:.0f} dia(s)"
+        else:
+            gap_desc = f"{gap_seconds / 3600:.0f} hora(s)"
+        prompt_injection.append(
+            f"[SISTEMA: Este lead está retomando o contato depois de cerca de {gap_desc} sem falar com a gente. "
+            "Use o histórico da conversa acima como contexto real (ele lembra de tudo que já foi dito). "
+            "Cumprimente reconhecendo a retomada de forma breve e natural (ex: 'Que bom que voltou!'), "
+            "SEM repetir a introdução/apresentação do zero, e continue o atendimento exatamente de onde a "
+            "conversa parou — nunca finja que é a primeira mensagem dele.]"
+        )
+
     if saved_w and saved_h:
         w_float = float(saved_w)
         h_float = float(saved_h)
         area = w_float * h_float
         charged_area = max(1.80, area) # Área mínima cobrada de 1.80m² igual à Fácil Persianas!
 
-        # Preços Fácil Persianas
-        p_blackout = charged_area * 147.39
-        p_solar = charged_area * 186.44
-        p_double = charged_area * 147.39
+        # Preços buscados AO VIVO na Fácil Persianas pra essa área+cor (com
+        # fallback pra tabela estática de referência se a busca falhar).
+        p_blackout = calcular_preco_modelo(HANDLES_ROLO_BLACKOUT, PRECO_ROLO_BLACKOUT, charged_area, saved_cor)
+        p_solar = calcular_preco_modelo(HANDLES_ROLO_TELA_SOLAR, PRECO_ROLO_TELA_SOLAR, charged_area, saved_cor)
+        p_double = calcular_preco_modelo(HANDLES_DOUBLE_VISION, PRECO_DOUBLE_VISION, charged_area, saved_cor)
 
         calc_info = f"[SISTEMA: Para as medidas de {w_float:.2f}m x {h_float:.2f}m (Área real: {area:.2f}m², Área cobrada/mínima: {charged_area:.2f}m²):\n"
-        calc_info += f"- Rolô Blackout (R$ 147.39/m²): R$ {p_blackout:.2f}\n"
-        calc_info += f"- Rolô Tela Solar (R$ 186.44/m²): R$ {p_solar:.2f}\n"
-        calc_info += f"- Double Vision (R$ 147.39/m²): R$ {p_double:.2f}\n"
+        calc_info += f"- Rolô Blackout: R$ {p_blackout:.2f}\n"
+        calc_info += f"- Rolô Tela Solar: R$ {p_solar:.2f}\n"
+        calc_info += f"- Double Vision: R$ {p_double:.2f}\n"
         calc_info += "USE ESTES VALORES EXATOS NO SEU ORÇAMENTO! NUNCA INVENTE OUTROS PREÇOS!]"
         prompt_injection.append(calc_info)
 
@@ -252,7 +414,8 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         saved_w = get_metadata(lead_id, "width")
         saved_h = get_metadata(lead_id, "height")
         saved_cep = get_metadata(lead_id, "cep")
-        
+        saved_cor = get_metadata(lead_id, "cor")
+
         total_price = 0.0
         if saved_w and saved_h:
             try:
@@ -260,10 +423,9 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
                 h_float = float(saved_h)
                 area = w_float * h_float
                 charged_area = max(1.80, area)
-                
-                # Preço padrão (Rolô Blackout como padrão se não soubermos o exato)
-                # m² = R$ 147.39
-                total_price = charged_area * 147.39
+
+                # Preço padrão (Rolô Blackout como padrão se não soubermos o exato modelo)
+                total_price = calcular_preco_modelo(HANDLES_ROLO_BLACKOUT, PRECO_ROLO_BLACKOUT, charged_area, saved_cor)
                 
                 # Somar frete se disponível
                 if saved_cep:
