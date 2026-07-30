@@ -1,7 +1,8 @@
 {
-  "_sobre": "Tabela de preços de referência de mercado, coletada em produtos equivalentes da Fácil Persianas (facilpersianas.com.br) e, quando não disponível lá, da Persianet (persianet.com.br). Usada para calibrar os preços cobrados pela Ágil Persianas. Área mínima cobrada confirmada em 1,8 m² (igual ao já usado no sistema).",
+  "_sobre": "Tabela de preços de referência de mercado, coletada em produtos equivalentes da Fácil Persianas (facilpersianas.com.br) e, quando não disponível lá, da Persianet (persianet.com.br). Usada para calibrar os preços cobrados pela Ágil Persianas. CORREÇÃO (2026-07-30): o campo area_minima_cobrada_m2=1.8 abaixo estava ERRADO — testamos ao vivo no seletor real do site da Fácil (largura/altura) e a Fácil NÃO tem uma área mínima única de cobrança. O preço sobe em degraus reais por tamanho (ver 'pontos' de cada categoria); 1,8 m² é só mais um desses degraus, não um mínimo. O preço para qualquer área deve usar o degrau (próximo ponto real >= área pedida), nunca interpolação linear entre pontos — ver `interpolar_preco()` em agent_template.py.",
   "data_coleta": "2026-07-29",
-  "area_minima_cobrada_m2": 1.8,
+  "correcao_data": "2026-07-30",
+  "area_minima_cobrada_m2_OBSOLETO_NAO_USAR": 1.8,
   "fontes": {
     "facil_persianas": "https://www.facilpersianas.com.br",
     "persianet": "https://www.persianet.com.br"

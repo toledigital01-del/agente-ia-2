@@ -174,22 +174,26 @@ PRECO_DOUBLE_VISION = [
 
 
 def interpolar_preco(area_m2: float, pontos: list) -> float:
-    """Interpola linearmente o preço pra uma área, usando pontos reais (área, preço)
-    coletados de mercado. Extrapola pela inclinação do primeiro/último trecho se a
-    área ficar fora da faixa coletada."""
+    """Preço pra uma área, usando pontos reais (área, preço) coletados de mercado.
+
+    IMPORTANTE: a Fácil Persianas NÃO interpola suavemente entre tamanhos —
+    testamos ao vivo no site deles (trocando largura/altura no seletor real)
+    e confirmamos que o preço "arredonda pra cima" pro próximo tamanho real
+    (ex: 1,00m x 1,00m cobra o mesmo que 1,00m x 1,20m, porque não existe
+    corte menor que 1,20m de altura pra essa largura — validamos ponto a
+    ponto: 1x1m cobra R$264,91 de verdade, não um valor interpolado menor
+    como R$236,93). Por isso usamos o preço do próximo ponto real >= área
+    pedida (degrau), em vez de uma média entre dois pontos — a média dava
+    um valor mais barato do que a Fácil realmente cobra."""
     pontos = sorted(pontos)
-    if area_m2 <= pontos[0][0]:
-        return pontos[0][1]
-    if area_m2 >= pontos[-1][0]:
-        (a0, p0), (a1, p1) = pontos[-2], pontos[-1]
-    else:
-        for i in range(len(pontos) - 1):
-            a0, p0 = pontos[i]
-            a1, p1 = pontos[i + 1]
-            if a0 <= area_m2 <= a1:
-                break
+    for a, p in pontos:
+        if area_m2 <= a:
+            return p
+    # Área maior que o maior ponto coletado: aí sim extrapola pela inclinação
+    # do último trecho, já que não há um próximo degrau real pra usar.
+    (a0, p0), (a1, p1) = pontos[-2], pontos[-1]
     taxa = (p1 - p0) / (a1 - a0)
-    return p0 + (area_m2 - a0) * taxa
+    return p1 + (area_m2 - a1) * taxa
 
 
 # ── Consulta de preço AO VIVO na Fácil Persianas (com fallback pra tabela estática) ──
