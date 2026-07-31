@@ -223,6 +223,16 @@ def get_lead_history(lead_id: str, limit: int = 50):
     ]
 
 
+def get_leads_with_checkout() -> list:
+    """Retorna leads que já receberam link de checkout (para acompanhamento de pagamento)."""
+    conn = _db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, phone, name FROM leads WHERE sent_checkout = 1")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r["id"], "phone": r["phone"], "name": r["name"]} for r in rows]
+
+
 def get_stats():
     """Retorna estatísticas do CRM."""
     conn = _db()

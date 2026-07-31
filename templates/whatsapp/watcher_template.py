@@ -14,6 +14,7 @@ Execução:
 import json
 import time
 import logging
+import signal
 import sys
 import traceback
 import urllib.request
@@ -226,12 +227,30 @@ def preprocess_text_for_tts(text: str) -> str:
     pattern_price_brl = r"(\d+(?:[\.,]\d+)*)\s*(?:BRL|Brl|brl)\b"
     text = re.sub(pattern_price_brl, lambda m: price_to_words(m.group(0)), text)
     
-    # 2. Substituir decimais de tamanho soltos por extenso (ex: 1.50 ou 1,50 ou 2.25)
+    # 2a. Converter medidas com unidade (ex: "1,50 metros" → "um metro e cinquenta centímetros")
+    def measure_replacer(match):
+        int_part = int(match.group(1))
+        dec_part = int(match.group(2))
+        base = f"{number_to_words(int_part)} metro"
+        if int_part != 1 or dec_part > 0:
+            base += "s"
+        if dec_part > 0:
+            base += f" e {number_to_words(dec_part)} centímetros"
+        return base
+
+    text = re.sub(
+        r"\b(\d+)[.,](\d{2})\s*metros?\b",
+        measure_replacer,
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 2b. Converter decimais soltos restantes (ex: preços sem R$ como "294,39")
     def decimal_replacer(match):
-        reais_part = int(match.group(1))
-        cents_part = int(match.group(2))
-        return f"{number_to_words(reais_part)} e {number_to_words(cents_part)}"
-        
+        int_part = int(match.group(1))
+        dec_part = int(match.group(2))
+        return f"{number_to_words(int_part)} e {number_to_words(dec_part)}"
+
     text = re.sub(r"\b(\d+)[.,](\d{2})\b", decimal_replacer, text)
     
     # 3. Adicionar reticências (...) para forçar pausas de respiração naturais do modelo nas pontuações
@@ -557,6 +576,47 @@ def check_human_handoff(phone: str, name: str, text: str) -> bool:
     return False
 
 
+def handle_owner_command(phone: str, text: str) -> bool:
+    """
+    Processa comandos enviados pelo dono diretamente para o número do agente.
+    Retorna True se era um comando (mensagem não deve ir para a IA normal).
+
+    Comandos disponíveis:
+      reativar NUMERO  — reativa a IA para o lead com esse número
+      pausar NUMERO    — pausa a IA para o lead com esse número
+    """
+    if not OWNER_PHONE or phone != OWNER_PHONE.replace("@s.whatsapp.net", ""):
+        return False
+
+    import sessions
+    text_lower = text.strip().lower()
+
+    if text_lower.startswith("reativar "):
+        target = re.sub(r"\D", "", text_lower.replace("reativar ", "", 1))
+        if not target:
+            send_whatsapp(OWNER_PHONE, "⚠️ Formato: reativar 5585999999999")
+            return True
+        lead_id = f"whatsapp_{target}"
+        sessions.save_metadata(lead_id, "human_handoff", "0")
+        logger.info(f"🤖 IA reativada para {target} por comando do dono.")
+        send_whatsapp(OWNER_PHONE, f"✅ IA reativada para {target}. O agente volta a responder normalmente.")
+        return True
+
+    if text_lower.startswith("pausar "):
+        target = re.sub(r"\D", "", text_lower.replace("pausar ", "", 1))
+        if not target:
+            send_whatsapp(OWNER_PHONE, "⚠️ Formato: pausar 5585999999999")
+            return True
+        lead_id = f"whatsapp_{target}"
+        sessions.save_metadata(lead_id, "human_handoff", "1")
+        sessions.save_metadata(lead_id, "human_handoff_at", str(int(time.time())))
+        logger.info(f"🙋 IA pausada para {target} por comando do dono.")
+        send_whatsapp(OWNER_PHONE, f"✅ IA pausada para {target}. Você pode atender manualmente.")
+        return True
+
+    return False
+
+
 def process_payment_followups():
     """Varre leads e processa lembretes de cobrança ativa de forma assíncrona/periódica.
 
@@ -568,16 +628,10 @@ def process_payment_followups():
     """
     try:
         import sessions
-        conn = sessions._db()
-        cursor = conn.cursor()
-        
-        # Buscar leads que receberam checkout
-        cursor.execute("SELECT id, phone, name FROM leads WHERE sent_checkout = 1")
-        leads_rows = cursor.fetchall()
-        conn.close()
-        
+
+        leads_rows = sessions.get_leads_with_checkout()
         now_ts = int(time.time())
-        
+
         for lead in leads_rows:
             lead_id = lead["id"]
             phone = lead["phone"]
@@ -743,6 +797,13 @@ def watch():
     state = load_state()
     iteration_counter = 0
     first_run = True
+    _stop = {"requested": False}
+
+    def _handle_sigterm(signum, frame):
+        logger.info("⏹️  SIGTERM recebido — encerrando após salvar estado...")
+        _stop["requested"] = True
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     owner_number = get_owner_jid()
     if owner_number:
@@ -754,9 +815,11 @@ def watch():
 
     while True:
         try:
-            # Processar lembretes de pagamento a cada 200 iterações (aproximadamente a cada 10 minutos)
+            # Manutenção periódica a cada 200 iterações (~10 minutos)
             if iteration_counter % 200 == 0:
                 process_payment_followups()
+                import sessions as _sessions
+                _sessions.cleanup_expired_sessions()
 
             # Watchdog: detecta o "estado zumbi" da Evolution (socket morto com
             # connectionState mentindo "open") e reconecta sozinho.
@@ -802,17 +865,28 @@ def watch():
                 time.sleep(POLL_INTERVAL)
                 continue
 
+            # Agrupar mensagens novas por lead — se um lead mandar várias mensagens
+            # no mesmo ciclo de polling (rafada), processamos só a última e marcamos
+            # todas como vistas. Isso evita N chamadas à IA por spam sem perder o
+            # contexto (a última mensagem carrega a intenção final do lead).
+            batch: dict[str, list] = {}
             for msg in messages:
                 msg_data = extract_message_data(msg)
                 if not msg_data or not msg_data.get("phone"):
                     continue
-
-                msg_id = msg_data["id"]
-                if msg_id in state["seen_ids"]:
+                if msg_data["id"] in state["seen_ids"]:
                     continue
+                batch.setdefault(msg_data["phone"], []).append(msg_data)
 
-                state["seen_ids"].append(msg_id)
-                phone = msg_data["phone"]
+            for phone, lead_msgs in batch.items():
+                for m in lead_msgs:
+                    state["seen_ids"].append(m["id"])
+
+                if len(lead_msgs) > 1:
+                    logger.debug(f"⏩ {phone}: {len(lead_msgs) - 1} mensagem(ns) agrupada(s) — processando só a última.")
+
+                msg_data = lead_msgs[-1]
+                msg_id = msg_data["id"]
                 name = msg_data["name"]
                 text = msg_data["text"]
                 is_audio = msg_data.get("is_audio", False)
@@ -852,6 +926,9 @@ def watch():
 
                 logger.info(f"📩 {name} ({phone}): {text[:60]}")
 
+                if handle_owner_command(phone, text):
+                    continue
+
                 if check_human_handoff(phone, name, text):
                     continue
 
@@ -872,10 +949,15 @@ def watch():
                     logger.error(f"Erro ao processar mensagem: {e}\n{traceback.format_exc()}")
 
             save_state(state)
+
+            if _stop["requested"]:
+                break
+
             time.sleep(POLL_INTERVAL)
 
         except KeyboardInterrupt:
             logger.info("⏹️  Watcher encerrado")
+            save_state(state)
             break
         except Exception as e:
             logger.error(f"Erro no loop: {e}\n{traceback.format_exc()}")

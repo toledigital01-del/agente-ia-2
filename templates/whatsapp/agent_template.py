@@ -24,7 +24,7 @@ from datetime import datetime
 
 # Carregar templates compartilhados
 sys.path.insert(0, str(Path(__file__).parent.parent / "shared"))
-from agent_core_template import call_ai, is_purchase_intent, is_handoff_request, is_toldo_request, format_checkout_message, SYSTEM_PROMPT, CHECKOUT_LINK, SESSION_TTL
+from agent_core_template import call_ai, is_purchase_intent, is_handoff_request, is_toldo_request, format_checkout_message, SYSTEM_PROMPT, SESSION_TTL
 import client_config
 from sessions_template import init_db, load_session, save_session, create_lead, add_message, mark_checkout_sent, save_metadata, get_metadata, get_lead_history
 
@@ -113,36 +113,7 @@ def get_shipping_quote(recipient_cep: str, width_m: float, height_m: float, quan
     except Exception as e:
         return {"error": str(e)}
 
-# Configurações de trigger ({{placeholders}} preenchidos durante setup)
 CHECKOUT_LINK = client_config.get("checkout_link", "")
-TRIGGER_EXACT = client_config.get("lead_trigger_phrase", "")
-TRIGGER_KEYWORDS = [
-    client_config.get("product_name", ""),
-    "dúvida",
-    "informação",
-    "saiba mais",
-    "orçamento",
-    "orcamento",
-    "cortina",
-    "persiana",
-    "toldo",
-    "tela",
-    "mosqueteira",
-    "blackout",
-    "double vision",
-    "valor",
-    "preço",
-    "preco",
-    "quanto custa",
-    "comprar",
-    "encomendar",
-    "oi",
-    "olá",
-    "ola",
-    "bom dia",
-    "boa tarde",
-    "boa noite"
-]
 
 DB_PATH = str(client_config.DB_PATH)
 
@@ -278,7 +249,7 @@ def calcular_preco_modelo(handles_map: dict, tabela_fallback: list, charged_area
 
 
 def is_trigger(text: str) -> bool:
-    """Verifica se mensagem contém trigger phrase (Sempre ativa para responder a absolutamente qualquer mensagem)."""
+    """Responde a toda mensagem recebida — sem filtro de trigger."""
     return True
 
 
@@ -385,7 +356,7 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         h_float = float(saved_h)
         quote_res = get_shipping_quote(saved_cep, w_float, h_float)
         if "quotes" in quote_res and quote_res["quotes"]:
-            best_quote = quote_res["quotes"][0]
+            best_quote = min(quote_res["quotes"], key=lambda q: q["price"])
             carrier = best_quote["carrier"]
             desc = best_quote["description"]
             price = best_quote["price"]
@@ -435,7 +406,7 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
                 if saved_cep:
                     quote_res = get_shipping_quote(saved_cep, w_float, h_float)
                     if "quotes" in quote_res and quote_res["quotes"]:
-                        total_price += quote_res["quotes"][0]["price"]
+                        total_price += min(quote_res["quotes"], key=lambda q: q["price"])["price"]
             except Exception:
                 pass
 
@@ -454,7 +425,7 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
                     if asaas_token:
                         asaas_url = "https://api.asaas.com/v3/paymentLinks"
                         payload = {
-                            "name": f"Pedido Customizado - Ágil Persianas",
+                            "name": f"Pedido Customizado - {client_config.get('product_name', 'Produto')}",
                             "description": f"Persiana sob medida de {saved_w}m x {saved_h}m com envio incluso para o CEP {saved_cep}",
                             "value": round(total_price, 2),
                             "billingType": "UNDEFINED",
@@ -492,9 +463,9 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
 def test_trigger():
     """Teste de trigger (para setup/test_agent.py)."""
     test_messages = [
-        TRIGGER_EXACT,
         "Oi, tenho uma dúvida sobre o produto",
-        "Não é trigger"
+        "Quero um orçamento",
+        "bom dia",
     ]
 
     print("Testando triggers:\n")
