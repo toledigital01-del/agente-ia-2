@@ -60,7 +60,9 @@ When modifying the prompt, ALWAYS enforce:
 
 ### 3. Database & SQL Integrity
 - The `leads` table uses exactly **11 bindings** in the `create_lead` SQL insert query inside `sessions.py`. Ensure `now` is supplied for both `created_at` and `updated_at`.
-- Use the `session_metadata` table to persist: `width`, `height`, `cep`, `checkout_id`, `asaas_checkout_url`, `checkout_sent_at`, and `followup_status` ("0", "1", "2", "PAID").
+- Use the `session_metadata` table to persist: `width`, `height`, `cep`, `endereco`, `checkout_id`, `asaas_checkout_url`, `checkout_sent_at`, and `followup_status` ("0", "1", "2", "PAID").
+- **`endereco` (added 2026-07-31):** full delivery address (street, number, complement, neighborhood), captured by the heuristic `extract_address()` in `agent.py`/`agent_template.py` — looks for a street-type keyword (rua/av/avenida/alameda/...) combined with either a number or the word "bairro". Deliberately not parsed into structured fields (street/number/etc. separately) — Brazilian addresses in free chat text are too irregular to regex reliably, and the raw string is good enough for the merchant to read and for the Asaas payment description. The prompt asks for it as its own step (6.5, right before generating the checkout link) so casual quote-only leads are never asked for it.
+- **Fake-link placeholder bug (found & fixed 2026-07-31):** the LLM sometimes decides on its own (per the prompt's step 7 "offer the payment link") that it's time to close, and writes closing text with a literal bracket placeholder like `[Link de pagamento será gerado e enviado aqui]` — **even when the customer's message didn't match any `is_purchase_intent()` keyword**, so the backend never actually generated an Asaas link. The customer would receive a broken, non-functional "link". Reproduced live: user said "não mande o link" after confirming their address, and got the raw placeholder back. Fixed in `agent.py`/`agent_template.py`: `handle_message()` now also checks the AI's own response text for a `LINK_PLACEHOLDER_PATTERN` (`\[...link...\]`, case-insensitive) as a second trigger alongside `is_purchase_intent()`, and if the placeholder is present, substitutes it in-place with the real generated URL instead of appending `format_checkout_message()` (which would have duplicated the closing message). The purchase-intent block was also moved to run **before** the response is saved to `messages`/SQLite (previously ran after) — otherwise the persisted conversation history would contain the fake placeholder text instead of the real link that was actually sent.
 
 ### 4. Audio Transcription and TTS Replies
 - **Whisper Transcription:** Audio messages are fetched in Base64 via `POST /chat/getBase64FromMediaMessage/{instance}` and transcribed with Whisper (Groq's `whisper-large-v3` preferred, `OPENAI_API_KEY`/`whisper-1` as second choice). You MUST include `"User-Agent": "Mozilla/5.0 ..."` in headers of urllib requests to Groq (`api.groq.com`) to bypass Cloudflare Error 403.
@@ -198,3 +200,22 @@ Isso também prova que **a alegação de "área mínima cobrada 1,8 m²"** (docu
 **Limitação ainda não resolvida:** a Fácil também varia o preço pela **largura**, não só pela área (ex: 1,20m de largura × 1,80m de altura custa R$268,63 ao vivo, bem diferente de 1,00m × 1,80m = R$294,39, mesma área aproximada). Nossa tabela de referência só tem pontos coletados pra largura ~100cm — pra pedidos com largura bem diferente de 100cm, o preço pode ainda divergir do real da Fácil. Corrigir isso direito exigiria coletar uma tabela de preços por largura (não só por área), tarefa ainda não feita.
 
 **Essa mesma correção foi replicada no site grande** (`agile-persianas-manager`, `src/lib/facil-persianas-price.functions.ts`) no mesmo dia, já que o site usa a mesma técnica de preço ao vivo.
+
+### 19. ⚠️ CORREÇÃO: handoff humano travava pra sempre (added 2026-08-02)
+**O bug:** `check_human_handoff()` pausava a IA pro lead "pra sempre" quando ele pedia atendente (ou perguntava sobre Toldo) — por decisão explícita de 2026-07-28, sem timeout. Só reativava com o dono mandando `reativar NUMERO` pro **número do próprio agente** (não respondendo o cliente direto pelo WhatsApp pessoal — isso não reativa nada).
+
+**Como descobrimos:** cliente (Fernando, 555596611311) pediu atendente, foi pausado, e ficou mandando mensagens por **dias** ("Oii", "Oi", até um "Resolvido" tentando avisar que podia voltar ao automático) — todas ignoradas pela IA, porque o dono não lembrava do comando `reativar`. Vimos isso direto no `watcher.log` da VPS: toda mensagem dele logava `🙋 ... ignorada pela IA — lead em atendimento humano`, sem nenhuma tentativa de expirar.
+
+**Importante:** isso é diferente do problema de "trava pra todo mundo" que o cliente relatou no mesmo dia — aquele foi uma queda real da conexão da Evolution (erro 500 na sonda de saúde por ~1h30, ver `watcher.log` horário 15h-17h de 2026-07-31), não um bug de código. Os dois problemas aconteceram próximos no tempo e pareciam a mesma coisa, mas são causas diferentes — sempre checar o `watcher.log` pra não confundir.
+
+**A correção:** `check_human_handoff()` agora reativa a IA automaticamente depois de `HUMAN_HANDOFF_TIMEOUT_SECONDS` (2 horas) desde `human_handoff_at`, sem precisar de nenhum comando. Reativação manual (`reativar NUMERO`) continua funcionando a qualquer momento, pra quando o dono quiser liberar antes das 2h.
+
+**Log em produção (`/opt/clientes/<cliente>/watcher.log` na VPS):** não sai pelo `journalctl` do systemd (só mostra start/stop do serviço) — o `StandardOutput`/`StandardError` do unit file redireciona pra esse arquivo direto. Sempre olhar esse arquivo primeiro pra depurar, não o journalctl.
+
+**Correção manual de emergência** (destravar um lead específico sem esperar o timeout nem lembrar o comando): SSH na VPS e rodar
+```
+cd /opt/agente && AGENTE_CLIENTE=agil-persianas AGENTE_CLIENTES_DIR=/opt/clientes python3 -c "
+import sessions
+sessions.save_metadata('whatsapp_<numero>', 'human_handoff', '0')
+"
+```

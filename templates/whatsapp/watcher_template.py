@@ -9,9 +9,19 @@ Chama agent.handle_message() e envia resposta via Evolution API.
 Execução:
   python3 watcher.py                    ← roda indefinidamente
   launchctl load ~/Library/LaunchAgents/com.meuagente.watcher.plist  ← auto-start macOS
+
+Anti-ban: este número já foi banido pelo WhatsApp uma vez. Todo envio passa por
+atraso humanizado + indicador "digitando..." + espaçamento anti-rajada, e há um
+aquecimento gradual de volume diário nos primeiros dias após reconectar (ver
+constantes MIN_SECONDS_BETWEEN_SENDS / TYPING_* / WARMUP_DAILY_LIMITS abaixo).
+Isso reduz o risco, mas não elimina — o WhatsApp pode banir por outros motivos
+(denúncias de usuários, IP de datacenter, etc). Para eliminar o risco de vez, a
+alternativa é migrar para a Meta Cloud API oficial (webhook_server.py).
 """
 
 import json
+import random
+import threading
 import time
 import logging
 import signal
@@ -60,6 +70,19 @@ HEALTH_RESTART_COOLDOWN = 600 # segundos mínimos entre dois restarts automátic
 STATE_FILE = client_config.STATE_FILE
 STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+# Anti-ban: esse número já foi banido pelo WhatsApp uma vez. Respostas instantâneas
+# e em rajada são o principal sinal que o WhatsApp usa pra distinguir bot de gente —
+# então toda mensagem passa por um atraso "digitando..." proporcional ao tamanho do
+# texto, e há um espaçamento mínimo entre quaisquer dois envios (mesmo pra leads
+# diferentes). Além disso, o número aquece gradualmente: o limite diário de
+# mensagens cresce nos primeiros dias após reconectar (sem nunca bloquear leads —
+# só avisa o dono se o volume ficar incomum pro estágio de aquecimento atual).
+MIN_SECONDS_BETWEEN_SENDS = 2.5   # espaçamento mínimo entre dois envios quaisquer
+TYPING_CHARS_PER_SECOND = 14      # velocidade de "digitação" simulada
+TYPING_MIN_SECONDS = 1.5
+TYPING_MAX_SECONDS = 9.0
+WARMUP_DAILY_LIMITS = {0: 20, 3: 50, 7: 100, 14: 250}  # dias-desde-reconexão -> limite/dia (soft)
+
 
 # ── Evolution API ─────────────────────────────────────────────────────────────
 
@@ -102,8 +125,136 @@ def fetch_messages(count: int = 20) -> list:
     return []
 
 
+_send_lock = threading.Lock()
+_last_send_at = 0.0
+
+
+def _respect_send_spacing():
+    """Garante um espaçamento mínimo entre dois envios quaisquer, mesmo que sejam
+    pra leads diferentes — evita rajadas de mensagens que soam como bot."""
+    global _last_send_at
+    with _send_lock:
+        wait = MIN_SECONDS_BETWEEN_SENDS - (time.time() - _last_send_at)
+        if wait > 0:
+            time.sleep(wait)
+        _last_send_at = time.time()
+
+
+def send_presence(phone: str, presence: str = "composing", duration_ms: int = 1200):
+    """Mostra 'digitando...' (ou 'gravando áudio...') pro lead antes de responder.
+    Best-effort: nunca deve travar o envio da mensagem se o endpoint falhar."""
+    try:
+        evolution_request(
+            f"/chat/sendPresence/{INSTANCE_NAME}",
+            method="POST",
+            data={"number": phone, "presence": presence, "delay": duration_ms}
+        )
+    except Exception:
+        pass
+
+
+def humanized_typing_delay(message: str) -> float:
+    """Atraso proporcional ao tamanho da mensagem (+ variação aleatória) pra imitar
+    o tempo que uma pessoa levaria digitando essa resposta."""
+    base = len(message) / TYPING_CHARS_PER_SECOND
+    jittered = base * random.uniform(0.85, 1.3)
+    return max(TYPING_MIN_SECONDS, min(TYPING_MAX_SECONDS, jittered))
+
+
+ANTIBAN_STATE_FILE = STATE_FILE.parent / "antiban_state.json"
+_antiban_lock = threading.Lock()
+
+
+def _load_antiban_state() -> dict:
+    if ANTIBAN_STATE_FILE.exists():
+        try:
+            return json.loads(ANTIBAN_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_antiban_state(state: dict):
+    ANTIBAN_STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _track_daily_send(phone: str):
+    """Atualiza o contador diário de envios/contatos novos e avisa o dono (uma vez
+    por dia) se o volume passar do limite de aquecimento esperado pro estágio atual
+    do número. Nunca bloqueia o envio — só dá visibilidade pro dono agir.
+
+    Usa um arquivo de estado próprio (separado do STATE_FILE de seen_ids) porque
+    esta função roda no meio do processamento de uma mensagem, enquanto o loop
+    principal ainda segura sua própria cópia em memória do state de seen_ids —
+    compartilhar o mesmo arquivo faria o save_state() do loop principal sobrescrever
+    e perder essas estatísticas."""
+    should_alert = False
+    messages_sent = 0
+    limit = 20
+    days_since = 0
+
+    with _antiban_lock:
+        state = _load_antiban_state()
+        today = datetime.now().strftime("%Y-%m-%d")
+        daily = state.setdefault("daily_stats", {})
+        if daily.get("date") != today:
+            daily["date"] = today
+            daily["messages_sent"] = 0
+            daily["contacts"] = []
+            daily["warned"] = False
+
+        daily["messages_sent"] = daily.get("messages_sent", 0) + 1
+        if phone not in daily.get("contacts", []):
+            daily.setdefault("contacts", []).append(phone)
+
+        first_connected = state.get("first_connected_date")
+        if not first_connected:
+            state["first_connected_date"] = today
+            first_connected = today
+
+        try:
+            days_since = (datetime.strptime(today, "%Y-%m-%d") -
+                          datetime.strptime(first_connected, "%Y-%m-%d")).days
+        except Exception:
+            days_since = 999
+
+        for threshold in sorted(WARMUP_DAILY_LIMITS):
+            if days_since >= threshold:
+                limit = WARMUP_DAILY_LIMITS[threshold]
+
+        messages_sent = daily["messages_sent"]
+        if messages_sent > limit and not daily.get("warned"):
+            daily["warned"] = True
+            should_alert = True
+
+        _save_antiban_state(state)
+
+    # Enviado fora do lock: send_whatsapp() chama esta mesma função pra registrar
+    # o próprio alerta, e o lock (não reentrante) travaria nessa segunda chamada.
+    if should_alert:
+        logger.warning(
+            f"⚠️  Volume diário ({messages_sent}) passou do limite de "
+            f"aquecimento esperado ({limit}) pro dia {days_since} desde a reconexão."
+        )
+        if OWNER_PHONE:
+            send_whatsapp(
+                OWNER_PHONE,
+                f"⚠️ O agente já enviou {messages_sent} mensagens hoje, acima do "
+                f"ritmo recomendado de aquecimento ({limit}/dia) pro número reconectado há "
+                f"{days_since} dia(s). Não bloqueei nenhum lead, mas se isso não for tráfego "
+                "real vale investigar — volume alto demais é o que costuma levar a bloqueios."
+            )
+
+
 def send_whatsapp(phone: str, message: str) -> bool:
-    """Envia mensagem via Evolution API."""
+    """Envia mensagem via Evolution API com atraso humanizado, indicador de
+    'digitando...' e espaçamento anti-rajada (o número já foi banido uma vez por
+    comportamento de bot — ver constantes de anti-ban no topo do arquivo)."""
+    delay = humanized_typing_delay(message)
+    send_presence(phone, "composing", int(delay * 1000))
+    time.sleep(delay)
+    _respect_send_spacing()
+
     result = evolution_request(
         f"/message/sendText/{INSTANCE_NAME}",
         method="POST",
@@ -112,6 +263,7 @@ def send_whatsapp(phone: str, message: str) -> bool:
     success = bool(result.get("key") or result.get("id"))
     if success:
         logger.info(f"📤 Enviado para {phone}")
+        _track_daily_send(phone)
     else:
         logger.error(f"❌ Falha ao enviar para {phone}: {result}")
     return success
@@ -318,7 +470,14 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
             # 3. Converter para base64 e enviar via sendMedia
             with open(temp_path, "rb") as audio_file:
                 audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
-                
+
+            # Anti-ban: mesmo cuidado do send_whatsapp() de texto — presença de
+            # "gravando áudio", atraso humanizado e espaçamento anti-rajada.
+            delay = humanized_typing_delay(message)
+            send_presence(phone, "recording", int(delay * 1000))
+            time.sleep(delay)
+            _respect_send_spacing()
+
             result = evolution_request(
                 f"/message/sendMedia/{INSTANCE_NAME}",
                 method="POST",
@@ -332,6 +491,7 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
             success = bool(result.get("key") or result.get("id"))
             if success:
                 logger.info(f"📤 Áudio ElevenLabs enviado com sucesso para {phone}")
+                _track_daily_send(phone)
                 return True
             else:
                 logger.error(f"❌ Falha ao enviar áudio ElevenLabs para {phone}: {result}")
@@ -532,12 +692,22 @@ def restart_evolution_instance() -> bool:
         return False
 
 
+HUMAN_HANDOFF_TIMEOUT_SECONDS = 2 * 60 * 60  # 2 horas — ver seção 19 do SKILL.md (2026-08-02)
+
+
 def check_human_handoff(phone: str, name: str, text: str) -> bool:
     """
     Verifica se a IA deve ficar de fora dessa mensagem porque o lead está em
     atendimento humano. Detecta pedidos novos de handoff (pausa a IA, avisa o
-    cliente e notifica OWNER_PHONE). Fica pausado até alguém liberar manualmente
-    (sem timeout automático — decisão explícita do cliente, 2026-07-28).
+    cliente e notifica OWNER_PHONE).
+
+    Reativação automática após HUMAN_HANDOFF_TIMEOUT_SECONDS (2h) desde o
+    pedido de handoff — corrige o problema real de 2026-08-02: um lead ficou
+    preso pra sempre nesse estado (mesmo digitando "resolvido") porque a
+    única forma de reativar era o dono mandar "reativar NUMERO" pro próprio
+    número do agente, e ele não lembrou/sabia do comando. Reativação manual
+    (`reativar NUMERO`) continua funcionando a qualquer momento, antes do
+    timeout.
 
     Retorna True se a mensagem foi interceptada (a IA NÃO deve responder).
     """
@@ -546,8 +716,15 @@ def check_human_handoff(phone: str, name: str, text: str) -> bool:
     status = sessions.get_metadata(lead_id, "human_handoff", "0")
 
     if status == "1":
-        logger.info(f"🙋 Mensagem de {name} ({phone}) ignorada pela IA — lead em atendimento humano.")
-        return True
+        handoff_at = sessions.get_metadata(lead_id, "human_handoff_at", "0")
+        elapsed = int(time.time()) - int(handoff_at or "0")
+        if elapsed >= HUMAN_HANDOFF_TIMEOUT_SECONDS:
+            sessions.save_metadata(lead_id, "human_handoff", "0")
+            logger.info(f"⏰ Handoff de {name} ({phone}) expirou após {elapsed // 60} min — IA reativada automaticamente.")
+            # segue o fluxo normal abaixo (não retorna True) — a IA já responde essa mensagem
+        else:
+            logger.info(f"🙋 Mensagem de {name} ({phone}) ignorada pela IA — lead em atendimento humano.")
+            return True
 
     if is_handoff_request(text):
         sessions.save_metadata(lead_id, "human_handoff", "1")
