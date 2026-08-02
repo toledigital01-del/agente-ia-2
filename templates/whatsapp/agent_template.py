@@ -33,20 +33,59 @@ init_db()
 
 import re
 
+_NUM = r"\d+(?:[.,]\d+)?"
+
+# Casa um rótulo ("largura"/"altura", abreviado "larg"/"alt") com um número
+# próximo, em QUALQUER ordem ("largura: 1,20m" ou "1,20 de largura") e com
+# um separador curto e flexível entre eles (":", "de", "é", "cm", etc.) —
+# cobre como as pessoas realmente escrevem medida no WhatsApp, não só o
+# formato apertado "1.50 x 2.00". Varrido com finditer (não-sobreposto) pra
+# que o mesmo número não seja roubado por dois rótulos diferentes quando a
+# frase tem os dois (ex: "largura 1,20 altura 1,00" — sem isso, o número da
+# largura seria capturado de novo como se fosse da altura).
+_LABELED_MEASURE_PATTERN = re.compile(
+    r"(?P<lab1>larg|alt)\w*[^\d]{0,10}(?P<num1>" + _NUM + r")"
+    r"|"
+    r"(?P<num2>" + _NUM + r")[^\d]{0,10}(?P<lab2>larg|alt)\w*"
+)
+
+
 def extract_dimensions(text: str):
-    """Extrai largura e altura de textos como '1.50 x 2.00', '150x200', '1.5 por 2'."""
-    pattern = r"(\d+(?:[.,]\d+)?)\s*(?:x|por)\s*(\d+(?:[.,]\d+)?)"
-    match = re.search(pattern, text.lower())
+    """Extrai largura e altura de textos como '1.50 x 2.00', '150x200', '1.5 por 2',
+    ou de frases mais naturais tipo '1m de altura e 1,20 de largura' /
+    'largura 1,20 altura 1,00' (com ou sem as palavras coladas nos números)."""
+    text_lower = text.lower()
+
+    def to_result(w, h):
+        if w > 10:
+            w = w / 100.0
+        if h > 10:
+            h = h / 100.0
+        return round(w, 2), round(h, 2)
+
+    # 1) Rótulos explícitos "largura"/"altura" em qualquer ordem — mais
+    # confiável que depender de "x"/"por" estarem colados aos números.
+    found = {}
+    for m in _LABELED_MEASURE_PATTERN.finditer(text_lower):
+        label, num = (m.group("lab1"), m.group("num1")) if m.group("lab1") else (m.group("lab2"), m.group("num2"))
+        key = "w" if label == "larg" else "h"
+        found.setdefault(key, num)
+    if "w" in found and "h" in found:
+        try:
+            w = float(found["w"].replace(",", "."))
+            h = float(found["h"].replace(",", "."))
+            return to_result(w, h)
+        except Exception:
+            pass
+
+    # 2) Formato apertado "1.50 x 2.00" / "150x200" / "1,5 por 2"
+    pattern = r"(" + _NUM + r")\s*(?:x|por)\s*(" + _NUM + r")"
+    match = re.search(pattern, text_lower)
     if match:
         try:
-            w_str, h_str = match.group(1), match.group(2)
-            w = float(w_str.replace(",", "."))
-            h = float(h_str.replace(",", "."))
-            if w > 10:
-                w = w / 100.0
-            if h > 10:
-                h = h / 100.0
-            return round(w, 2), round(h, 2)
+            w = float(match.group(1).replace(",", "."))
+            h = float(match.group(2).replace(",", "."))
+            return to_result(w, h)
         except Exception:
             pass
     return None
@@ -114,6 +153,12 @@ def get_shipping_quote(recipient_cep: str, width_m: float, height_m: float, quan
         return {"error": str(e)}
 
 CHECKOUT_LINK = client_config.get("checkout_link", "")
+
+# Detecta quando a própria IA já escreveu um texto de fechamento com um
+# placeholder de link (ex: "[Link de pagamento será gerado e enviado aqui]")
+# sem o backend ter gerado a URL real ainda — sinal de que ela decidiu
+# fechar a venda mesmo sem a frase do cliente bater com is_purchase_intent().
+LINK_PLACEHOLDER_PATTERN = re.compile(r"\[[^\]]{0,80}link[^\]]{0,80}\]", re.IGNORECASE)
 
 DB_PATH = str(client_config.DB_PATH)
 
@@ -206,6 +251,28 @@ def extract_color(text: str) -> str:
     return None
 
 
+ADDRESS_STREET_KEYWORDS = [
+    "rua ", "r.", "av ", "av.", "avenida", "alameda", "travessa", "rodovia",
+    "estrada", "praça", "praca", "quadra", "qd ", "lote ",
+]
+
+
+def extract_address(text: str) -> str:
+    """Detecta se a mensagem parece ser um endereço completo de entrega
+    (rua/avenida + número, ou menção a bairro) e retorna o texto bruto pra
+    salvar como está no metadata do lead — endereço é texto livre demais pra
+    tentar quebrar em campos estruturados sem um serviço de CEP/geocoding."""
+    if not text:
+        return None
+    text_lower = text.lower()
+    has_street_kw = any(kw in text_lower for kw in ADDRESS_STREET_KEYWORDS)
+    has_bairro_kw = "bairro" in text_lower
+    has_number = bool(re.search(r"\bn[ºo°]?\s*\d+\b", text_lower)) or bool(re.search(r",\s*\d+\b", text))
+    if (has_street_kw and has_number) or (has_street_kw and has_bairro_kw) or (has_bairro_kw and has_number):
+        return text.strip()
+    return None
+
+
 def buscar_preco_ao_vivo(handle: str, area_m2: float, timeout: int = 5) -> float:
     """Busca o preço real no site da Fácil Persianas pra essa área (m²), via
     interpolação entre as variantes (largura-altura) reais mais próximas.
@@ -288,6 +355,10 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
     if cor:
         save_metadata(lead_id, "cor", cor)
 
+    endereco = extract_address(text)
+    if endereco:
+        save_metadata(lead_id, "endereco", endereco)
+
     # 3. Carregar sessão ativa (cache "quente", expira em SESSION_TTL) ou,
     # se ela já expirou, reconstruir o contexto a partir do histórico
     # permanente salvo no banco — assim um lead que some e volta dias depois
@@ -316,6 +387,7 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
     saved_h = get_metadata(lead_id, "height")
     saved_cep = get_metadata(lead_id, "cep")
     saved_cor = get_metadata(lead_id, "cor")
+    saved_endereco = get_metadata(lead_id, "endereco")
 
     prompt_injection = []
 
@@ -367,6 +439,13 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         elif "error" in quote_res:
             prompt_injection.append(f"[SISTEMA: Ocorreu um erro no cálculo de frete Frenet para o CEP {saved_cep}: {quote_res.get('error')}. Diga ao cliente que vai calcular com o setor de logística e já retorna.]")
 
+    if saved_endereco:
+        prompt_injection.append(
+            f"[SISTEMA: Endereço completo de entrega informado pelo cliente: \"{saved_endereco}\". "
+            "Se ainda não confirmou esse endereço de volta com ele, confirme antes de gerar o link de pagamento. "
+            "Se já confirmou, pode seguir normalmente.]"
+        )
+
     # Injetar instruções calculadas dinamicamente no final do histórico enviado à IA
     ai_messages = messages.copy()
     if prompt_injection:
@@ -376,20 +455,20 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
     # 5. Chamar IA
     response = call_ai(ai_messages)
 
-    # 6. Adicionar resposta do agente
-    messages.append({"role": "assistant", "content": response})
-    add_message(lead_id, "assistant", response)
-
-    # 7. Salvar sessão
-    save_session(lead_id, messages)
-
-    # 8. Verificar intenção de compra
-    if is_purchase_intent(text, messages) and len(messages) >= 4:
+    # 6. Verificar intenção de compra — ou a própria IA já ter escrito um
+    # placeholder de link (ela às vezes decide fechar e escreve algo como
+    # "[Link de pagamento será gerado e enviado aqui]" mesmo quando a frase
+    # do cliente não bate com nenhuma palavra-chave de is_purchase_intent).
+    # Rodar isso ANTES de salvar a resposta no histórico, pra nunca gravar
+    # um texto diferente do que o cliente de fato recebeu.
+    promised_link_without_url = bool(LINK_PLACEHOLDER_PATTERN.search(response))
+    if (is_purchase_intent(text, messages) or promised_link_without_url) and len(messages) >= 3:
         # Calcular preço dinâmico com base nas medidas e CEP salvos do lead
         saved_w = get_metadata(lead_id, "width")
         saved_h = get_metadata(lead_id, "height")
         saved_cep = get_metadata(lead_id, "cep")
         saved_cor = get_metadata(lead_id, "cor")
+        saved_endereco = get_metadata(lead_id, "endereco")
 
         total_price = 0.0
         if saved_w and saved_h:
@@ -416,46 +495,54 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         # Se temos um preço válido, gera o link na Asaas
         if total_price > 20.0:
             try:
-                from pathlib import Path
-                p_conf = Path.home() / ".meu-agente" / "config.json"
-                if p_conf.exists():
-                    config_data = json.loads(p_conf.read_text(encoding="utf-8"))
-                    asaas_token = config_data.get("asaas_api_key", "")
-                    
-                    if asaas_token:
-                        asaas_url = "https://api.asaas.com/v3/paymentLinks"
-                        payload = {
-                            "name": f"Pedido Customizado - {client_config.get('product_name', 'Produto')}",
-                            "description": f"Persiana sob medida de {saved_w}m x {saved_h}m com envio incluso para o CEP {saved_cep}",
-                            "value": round(total_price, 2),
-                            "billingType": "UNDEFINED",
-                            "chargeType": "DETACHED",
-                            "dueDateLimitDays": 3
-                        }
-                        req = urllib.request.Request(
-                            asaas_url,
-                            data=json.dumps(payload).encode("utf-8"),
-                            headers={
-                                "Content-Type": "application/json",
-                                "access_token": asaas_token
-                            },
-                            method="POST"
-                        )
-                        with urllib.request.urlopen(req, timeout=12) as r:
-                            res = json.loads(r.read().decode("utf-8"))
-                            if "url" in res:
-                                checkout_url = res["url"]
-                                checkout_id = res.get("id", "")
-                                # Salvar metadados de checkout para lembrete automático
-                                save_metadata(lead_id, "checkout_id", checkout_id)
-                                save_metadata(lead_id, "asaas_checkout_url", checkout_url)
-                                save_metadata(lead_id, "checkout_sent_at", str(int(datetime.now().timestamp())))
-                                save_metadata(lead_id, "followup_status", "0")
+                asaas_token = client_config.get("asaas_api_key", "")
+
+                if asaas_token:
+                    asaas_url = "https://api.asaas.com/v3/paymentLinks"
+                    payload = {
+                        "name": f"Pedido Customizado - {client_config.get('product_name', 'Produto')}",
+                        "description": f"Persiana sob medida de {saved_w}m x {saved_h}m com envio incluso para o CEP {saved_cep}" + (f" — Endereço: {saved_endereco}" if saved_endereco else ""),
+                        "value": round(total_price, 2),
+                        "billingType": "UNDEFINED",
+                        "chargeType": "DETACHED",
+                        "dueDateLimitDays": 3
+                    }
+                    req = urllib.request.Request(
+                        asaas_url,
+                        data=json.dumps(payload).encode("utf-8"),
+                        headers={
+                            "Content-Type": "application/json",
+                            "access_token": asaas_token
+                        },
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req, timeout=12) as r:
+                        res = json.loads(r.read().decode("utf-8"))
+                        if "url" in res:
+                            checkout_url = res["url"]
+                            checkout_id = res.get("id", "")
+                            # Salvar metadados de checkout para lembrete automático
+                            save_metadata(lead_id, "checkout_id", checkout_id)
+                            save_metadata(lead_id, "asaas_checkout_url", checkout_url)
+                            save_metadata(lead_id, "checkout_sent_at", str(int(datetime.now().timestamp())))
+                            save_metadata(lead_id, "followup_status", "0")
             except Exception:
                 pass # Em caso de erro, usa o fallback CHECKOUT_LINK
 
-        response += f"\n\n{format_checkout_message(checkout_url)}"
+        if promised_link_without_url:
+            # A IA já escreveu a frase de fechamento — só falta trocar o
+            # placeholder pela URL real, sem duplicar a mensagem de checkout.
+            response = LINK_PLACEHOLDER_PATTERN.sub(checkout_url, response)
+        else:
+            response += f"\n\n{format_checkout_message(checkout_url)}"
         mark_checkout_sent(lead_id)
+
+    # 7. Adicionar resposta do agente (já com o link real, se houver)
+    messages.append({"role": "assistant", "content": response})
+    add_message(lead_id, "assistant", response)
+
+    # 8. Salvar sessão
+    save_session(lead_id, messages)
 
     return response
 
