@@ -21,6 +21,7 @@ alternativa é migrar para a Meta Cloud API oficial (webhook_server.py).
 
 import json
 import random
+import re
 import threading
 import time
 import logging
@@ -83,10 +84,14 @@ TYPING_MIN_SECONDS = 1.5
 TYPING_MAX_SECONDS = 9.0
 WARMUP_DAILY_LIMITS = {0: 20, 3: 50, 7: 100, 14: 250}  # dias-desde-reconexão -> limite/dia (soft)
 
+# Link dentro de uma resposta em áudio precisa chegar TAMBÉM por escrito — o
+# cliente não consegue clicar num link falado. Ver seção 23 do SKILL.md.
+URL_PATTERN = re.compile(r"https?://\S+")
+
 
 # ── Evolution API ─────────────────────────────────────────────────────────────
 
-def evolution_request(endpoint: str, method: str = "GET", data: dict = None) -> dict:
+def evolution_request(endpoint: str, method: str = "GET", data: dict = None, timeout: int = 10) -> dict:
     url = f"{EVOLUTION_URL}{endpoint}"
     headers = {
         "apikey": EVOLUTION_API_KEY,
@@ -99,8 +104,12 @@ def evolution_request(endpoint: str, method: str = "GET", data: dict = None) -> 
         method=method
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        logger.error(f"Evolution API erro: HTTP {e.code} — {body[:300]}")
+        return {}
     except Exception as e:
         logger.error(f"Evolution API erro: {e}")
         return {}
@@ -365,10 +374,86 @@ def price_to_words(price_str: str) -> str:
     return " ".join(result)
 
 
+_UF_PARA_ESTADO = {
+    "AC": "Acre", "AL": "Alagoas", "AP": "Amapá", "AM": "Amazonas", "BA": "Bahia",
+    "CE": "Ceará", "DF": "Distrito Federal", "ES": "Espírito Santo", "GO": "Goiás",
+    "MA": "Maranhão", "MT": "Mato Grosso", "MS": "Mato Grosso do Sul", "MG": "Minas Gerais",
+    "PA": "Pará", "PB": "Paraíba", "PR": "Paraná", "PE": "Pernambuco", "PI": "Piauí",
+    "RJ": "Rio de Janeiro", "RN": "Rio Grande do Norte", "RS": "Rio Grande do Sul",
+    "RO": "Rondônia", "RR": "Roraima", "SC": "Santa Catarina", "SP": "São Paulo",
+    "SE": "Sergipe", "TO": "Tocantins",
+}
+
+
 def preprocess_text_for_tts(text: str) -> str:
     """Prepara o texto para ser falado de forma perfeita, pausada e sem erros de números ou símbolos."""
     import re
-    
+
+    # Nunca falar um link em voz alta (fica soletrando "h t t p dois pontos...") —
+    # o link já vai por escrito em mensagem separada (ver send_whatsapp_audio
+    # no loop principal). Remove a URL e limpa os espaços/pontuação que sobram.
+    text = re.sub(r"https?://\S+", "", text)
+
+    # Remover formatação Markdown — a IA escreve **negrito**, listas com "- " e
+    # às vezes cabeçalhos "#", pensado pro texto do WhatsApp. Os símbolos soltos
+    # confundem o TTS (2026-08-03: causa real de erros de pronúncia — ver seção
+    # 25 do SKILL.md, ex: "Cidade: Florianópolis/SC" saiu como "Sassicado").
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)          # **negrito**
+    text = re.sub(r"(?<!\w)\*(.+?)\*(?!\w)", r"\1", text)  # *itálico*
+    text = re.sub(r"^[ \t]*[-•]\s+", "", text, flags=re.MULTILINE)  # marcador de lista
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)      # cabeçalho markdown
+
+    # Sigla de estado (UF) sozinha ou colada com barra/hífen costuma sair
+    # errado ou embolada com a palavra anterior — troca pelo nome por extenso
+    # (ex: "Florianópolis/SC" -> "Florianópolis, Santa Catarina").
+    def _uf_replacer(m):
+        estado = _UF_PARA_ESTADO.get(m.group(1).upper())
+        return f", {estado}" if estado else m.group(0)
+
+    text = re.sub(r"[/\-,]\s*([A-Z]{2})\b(?!\w)", _uf_replacer, text)
+
+    # CEP (8 dígitos, com ou sem hífen) — ler dígito por dígito é o jeito mais
+    # claro e confiável pro TTS. Sem isso o modelo tenta "compor" um número
+    # grande de 5 dígitos e embola (cliente relatou erro em "88085-250",
+    # 2026-08-03 — seção 26 do SKILL.md).
+    _DIGITOS_PT = ["zero", "um", "dois", "três", "quatro", "cinco", "seis", "sete", "oito", "nove"]
+
+    def _falar_digitos(m):
+        digitos = re.sub(r"\D", "", m.group(0))
+        return ", ".join(_DIGITOS_PT[int(d)] for d in digitos)
+
+    text = re.sub(r"\b\d{5}-\d{3}\b", _falar_digitos, text)
+    text = re.sub(r"(?<=CEP )\d{8}\b", _falar_digitos, text, flags=re.IGNORECASE)
+
+    # "nº" / "n°" (abreviação de "número", com o símbolo de ordinal) confundia
+    # o TTS — expande por extenso (ex: "nº 193" -> "número 193").
+    text = re.sub(r"\bn[º°]\s*", "número ", text, flags=re.IGNORECASE)
+
+    # "6x" (parcelas) -> "seis vezes" — sem isso o modelo tenta "adivinhar" a
+    # pronúncia de "6x" sozinho e engasga bem na palavra "vezes" (reportado
+    # pelo cliente, 2026-08-03 — seção 29 do SKILL.md). Só converte quando NÃO
+    # vier seguido de outro dígito, pra não mexer em medida tipo "10x20".
+    def _vezes_replacer(m):
+        return f"{number_to_words(int(m.group(1)))} vezes"
+
+    text = re.sub(r"\b(\d+)x\b(?!\d)", _vezes_replacer, text, flags=re.IGNORECASE)
+
+    # "cartão" (no contexto de parcelamento, ex: "sem juros no cartão") vira
+    # "cartal"/"cartel" nessa voz -- bug real, confirmado ouvindo o áudio
+    # gerado (cliente, 2026-08-03). Testei à exaustão pra achar outro jeito
+    # (estabilidade 0.55/0.7/0.85, velocidade 1.05/1.0/0.9, reordenar a frase,
+    # trocar "vezes" por "parcelas", separar em duas frases) e nada resolveu
+    # -- só a troca de palavra funcionou (9/9 testes limpos). "no crédito" é
+    # sinônimo natural e comum em PDV/checkout no Brasil pra "parcelado no
+    # cartão de crédito". Único uso de "cartão" no sistema é forma de
+    # pagamento (nunca aparece em outro contexto no prompt) -- troca segura.
+    text = re.sub(r"\bcartão de crédito\b", "crédito", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bcartão\b", "crédito", text, flags=re.IGNORECASE)
+
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.strip()
+
     # Substituir símbolos indesejados comuns no chat de medidas
     text = text.replace("+", " e ").replace(" x ", " por ").replace(" X ", " por ")
     
@@ -404,14 +489,42 @@ def preprocess_text_for_tts(text: str) -> str:
         return f"{number_to_words(int_part)} e {number_to_words(dec_part)}"
 
     text = re.sub(r"\b(\d+)[.,](\d{2})\b", decimal_replacer, text)
-    
-    # 3. Adicionar reticências (...) para forçar pausas de respiração naturais do modelo nas pontuações
-    text = text.replace(", ", ", ... ")
-    text = text.replace(". ", ". ... ")
-    text = text.replace("! ", "! ... ")
-    text = text.replace("? ", "? ... ")
-    
+
+    # "m²" (metro quadrado, usado no preço de Tela Mosquiteira/Toldo) confundia
+    # o TTS igual "nº" -- mesma classe de bug (símbolo colado numa letra que o
+    # modelo não sabe ler). Precisa rodar DEPOIS dos blocos 2a/2b acima: se
+    # "m²" virasse "metros quadrados" antes, o measure_replacer ia confundir
+    # com medida linear (ex: "1,80 m²" viraria "um metro e oitenta
+    # centímetros", errado -- área não é a mesma coisa que comprimento).
+    # "o m²" (preço por unidade, ex: "R$ 180,00 o m²") fala-se no singular --
+    # "o metro quadrado" -- igual quando alguém fala "o quilo" ou "o litro".
+    # Já uma quantidade (ex: "1,80 m²") fica no plural, tratado pela regra
+    # seguinte.
+    text = re.sub(r"\bo\s+m[²2]\b", "o metro quadrado", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bm[²2]\b", "metros quadrados", text, flags=re.IGNORECASE)
+
+    # (Removido em 2026-08-02: inserir "..." depois de toda vírgula/ponto criava
+    # uma pausa forçada atrás de cada frase, deixando a fala truncada e robótica
+    # — cliente reclamou que soava "fala, pausa, fala, pausa". A pontuação normal
+    # já é suficiente pro modelo v2 pausar de forma natural.)
+
     return text
+
+
+def add_tone_tags_for_v3(text: str) -> str:
+    """Intercala tags de tom ([friendly]/[warmly]) do modelo eleven_v3 a cada frase.
+    Sem isso o v3 soa "lendo um texto" — cliente aprovou essa versão em 2026-08-02
+    comparando com a versão sem tags. IMPORTANTE (2026-08-03): NÃO quebrar por
+    linha além de .!? — tentei isso na seção 25 do SKILL.md pra dar pausa em
+    listas/endereço, mas piorou tudo (mais devagar, mais engasgo, entonação
+    pior) porque cada tag reseta o "estado emocional" do modelo v3 — quebrar
+    o texto em fragmentos demais vira o oposto do problema que a gente
+    tinha resolvido antes (fala truncada). Revertido — só a pontuação normal
+    (.!?) deve gerar uma nova tag."""
+    import re
+    tags = ["[friendly]", "[warmly]"]
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+    return " ".join(f"{tags[i % len(tags)]} {part}" for i, part in enumerate(parts))
 
 
 def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
@@ -421,30 +534,45 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
     import os
     
     try:
-        # 1. Carregar chave e voz do config.json
-        p_conf = Path.home() / ".meu-agente" / "config.json"
-        if not p_conf.exists():
-            return False
-            
-        config_data = json.loads(p_conf.read_text(encoding="utf-8"))
-        eleven_key = config_data.get("elevenlabs_api_key", "")
+        # 1. Carregar chave e voz do config.json do cliente (client_config, não
+        # o caminho antigo ~/.meu-agente — ver seção 20 do SKILL.md, 2026-08-02)
+        eleven_key = client_config.get("elevenlabs_api_key", "")
         # Usar voz padrão "Rachel" (21m00Tcm4TlvDq8ikWAM) se não houver outra configurada
-        voice_id = config_data.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")
-        
+        voice_id = client_config.get("elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM")
+
         if not eleven_key:
             return False  # Sem chave, força fallback para gTTS sem erro
-            
-        # Pré-processar o texto para expandir preços por extenso e adicionar pausas de respiração!
+
+        # Pré-processar o texto para expandir preços por extenso
         message_clean = preprocess_text_for_tts(message)
-            
+
         # 2. Chamar ElevenLabs API
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
         payload = {
             "text": message_clean,
+            # REVERTIDO pra eleven_multilingual_v2 em 2026-08-03 (seção 27 do
+            # SKILL.md) — o eleven_v3 soava mais natural em conversa comum,
+            # mas se mostrou NÃO CONFIÁVEL pra ler conteúdo estruturado/numérico
+            # (endereço, CEP, valores): em teste real, o v3 chegou a OMITIR o
+            # endereço inteiro de uma resposta (confirmado via transcrição —
+            # foi direto de "Claro!" pra "Está tudo certinho?", pulando rua,
+            # bairro, CEP). O v2 leu a mesma frase completa e correta. Errar
+            # ou sumir com um endereço/CEP é muito pior que soar um pouco mais
+            # "lido" — confiabilidade vem antes de naturalidade aqui.
             "model_id": "eleven_multilingual_v2",
             "voice_settings": {
-                "stability": 0.85,
-                "similarity_boost": 0.85
+                # Estabilidade subida de 0.3 pra 0.55 e style baixado de 0.25 pra
+                # 0.1 em 2026-08-03 (seção 28 do SKILL.md) — stability baixo dá
+                # mais variação emocional, mas também mais chance de engasgo
+                # aleatório (confirmado: mesma frase com preço "R$ 54,01" saiu
+                # como "buasalhão" com stability 0.3, e saiu limpa em 3/3 testes
+                # com stability 0.55). Cliente pediu confiabilidade acima de
+                # naturalidade — esse é o equilíbrio ideal pra isso.
+                "stability": 0.55,
+                "similarity_boost": 0.75,
+                "style": 0.1,
+                "use_speaker_boost": True,
+                "speed": 1.05,
             }
         }
         
@@ -461,32 +589,48 @@ def send_whatsapp_audio_elevenlabs(phone: str, message: str) -> bool:
         
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
             temp_path = f.name
-            
+
+        # Anti-ban: mostrar "gravando áudio..." já ANTES de chamar a ElevenLabs,
+        # não depois — o v3 pode levar vários segundos pra gerar (ver seção 21 do
+        # SKILL.md, 2026-08-02) e antes o lead ficava sem nenhum sinal visual
+        # durante esse tempo real de espera. Agora o indicador cobre o tempo de
+        # geração de verdade, em vez de um atraso artificial só no final.
+        delay_alvo = humanized_typing_delay(message)
+        send_presence(phone, "recording", int(delay_alvo * 1000))
+        t_geracao_inicio = time.time()
+
         try:
             with urllib.request.urlopen(req, timeout=40) as r:
                 with open(temp_path, "wb") as f_out:
                     f_out.write(r.read())
-                    
-            # 3. Converter para base64 e enviar via sendMedia
+
+            # 3. Converter para base64 e enviar via sendWhatsAppAudio
             with open(temp_path, "rb") as audio_file:
                 audio_base64 = base64.b64encode(audio_file.read()).decode("utf-8")
 
-            # Anti-ban: mesmo cuidado do send_whatsapp() de texto — presença de
-            # "gravando áudio", atraso humanizado e espaçamento anti-rajada.
-            delay = humanized_typing_delay(message)
-            send_presence(phone, "recording", int(delay * 1000))
-            time.sleep(delay)
+            # Só completa o atraso humanizado se a geração real foi mais rápida
+            # que o tempo que uma pessoa levaria — se já foi mais lenta (comum
+            # com v3), não espera mais nada.
+            restante = delay_alvo - (time.time() - t_geracao_inicio)
+            if restante > 0:
+                time.sleep(restante)
             _respect_send_spacing()
 
+            # sendWhatsAppAudio (não sendMedia) é o endpoint que faz o áudio chegar
+            # como mensagem de voz nativa (bolha redonda com onda sonora e mic),
+            # igual quando uma pessoa grava e solta o dedo — sendMedia manda como
+            # arquivo de áudio anexado, sem esse efeito. O campo "audio" tem que
+            # ser base64 puro, SEM prefixo "data:audio/...;base64," — com prefixo
+            # o Evolution rejeita com 400 "Owned media must be a url, base64...".
             result = evolution_request(
-                f"/message/sendMedia/{INSTANCE_NAME}",
+                f"/message/sendWhatsAppAudio/{INSTANCE_NAME}",
                 method="POST",
                 data={
                     "number": phone,
-                    "mediatype": "audio",
-                    "media": audio_base64,
-                    "fileName": "audio.mp3"
-                }
+                    "audio": audio_base64,
+                    "encoding": True
+                },
+                timeout=30
             )
             success = bool(result.get("key") or result.get("id"))
             if success:
@@ -508,6 +652,60 @@ def send_whatsapp_audio(phone: str, message: str) -> bool:
     """Converte texto para áudio e envia como áudio do WhatsApp, utilizando EXCLUSIVAMENTE a ElevenLabs."""
     # Tentar com ElevenLabs. Se falhar ou não houver chave, retorna False para forçar o envio em texto!
     return send_whatsapp_audio_elevenlabs(phone, message)
+
+
+# ── Envio de fotos/vídeos da biblioteca de mídia (seção 22, 2026-08-02) ──────
+
+_MEDIATYPE_TO_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+    ".mp4": "video/mp4",
+}
+
+
+def send_whatsapp_media(phone: str, file_path, mediatype: str) -> bool:
+    """Envia uma foto ou vídeo real (arquivo local em MEDIA_DIR) via sendMedia
+    da Evolution API. mediatype é "image" ou "video". Best-effort: nunca deve
+    derrubar o resto do fluxo se o arquivo não existir ou o envio falhar."""
+    import base64
+
+    file_path = Path(file_path)
+    if not file_path.exists():
+        logger.error(f"❌ Arquivo de mídia não encontrado: {file_path}")
+        return False
+
+    mime = _MEDIATYPE_TO_MIME.get(file_path.suffix.lower(), "application/octet-stream")
+
+    try:
+        with open(file_path, "rb") as f:
+            media_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+        delay = TYPING_MIN_SECONDS if mediatype == "image" else 3.0
+        send_presence(phone, "composing", int(delay * 1000))
+        time.sleep(delay)
+        _respect_send_spacing()
+
+        result = evolution_request(
+            f"/message/sendMedia/{INSTANCE_NAME}",
+            method="POST",
+            data={
+                "number": phone,
+                "mediatype": mediatype,
+                "mimetype": mime,
+                "media": media_base64,
+                "fileName": file_path.name,
+            },
+            timeout=45,
+        )
+        success = bool(result.get("key") or result.get("id"))
+        if success:
+            logger.info(f"📤 Mídia ({mediatype}) enviada com sucesso para {phone}: {file_path.name}")
+            _track_daily_send(phone)
+            return True
+        logger.error(f"❌ Falha ao enviar mídia ({mediatype}) pra {phone}: {result}")
+        return False
+    except Exception as e:
+        logger.error(f"Erro ao enviar mídia ({mediatype}) pra {phone}: {e}")
+        return False
 
 
 # ── Extração de mensagens ─────────────────────────────────────────────────────
@@ -596,12 +794,7 @@ def check_asaas_payment_status(payment_link_id: str) -> str:
     Retorna: 'PAID' (pago), 'PENDING' (pendente), ou 'NONE' (nenhuma tentativa/pago).
     """
     try:
-        p_conf = Path.home() / ".meu-agente" / "config.json"
-        if not p_conf.exists():
-            return "NONE"
-            
-        config_data = json.loads(p_conf.read_text(encoding="utf-8"))
-        asaas_token = config_data.get("asaas_api_key", "")
+        asaas_token = client_config.get("asaas_api_key", "")
         if not asaas_token:
             return "NONE"
             
@@ -882,18 +1075,13 @@ def transcribe_audio_base64(base64_str: str) -> str:
                 elif line.startswith("OPENAI_API_KEY="):
                     openai_key = line.split("=", 1)[1].strip()
 
-        # O config.json é o lugar canônico das chaves deste projeto — o .env acima
-        # pertence a outra ferramenta e pode simplesmente não existir no servidor
-        # (foi o que deixou a transcrição de áudio muda no VPS até 2026-07-28).
+        # O config.json do cliente (client_config) é o lugar canônico das chaves
+        # deste projeto — o .env acima pertence a outra ferramenta e pode
+        # simplesmente não existir no servidor (foi o que deixou a transcrição
+        # de áudio muda no VPS até 2026-07-28).
         if not groq_key and not openai_key:
-            p_conf = Path.home() / ".meu-agente" / "config.json"
-            if p_conf.exists():
-                try:
-                    conf = json.loads(p_conf.read_text(encoding="utf-8"))
-                    groq_key = conf.get("groq_api_key", "") or ""
-                    openai_key = conf.get("openai_api_key", "") or ""
-                except Exception as e:
-                    logger.warning(f"Não foi possível ler chaves de transcrição do config.json: {e}")
+            groq_key = client_config.get("groq_api_key", "") or ""
+            openai_key = client_config.get("openai_api_key", "") or ""
 
 
         # Configurar endpoints e modelo
@@ -909,20 +1097,14 @@ def transcribe_audio_base64(base64_str: str) -> str:
             # Se não houver no watch, só reaproveita a ai_api_key do config.json quando o
             # provider configurado for realmente "openai" — chaves Anthropic/Gemini não
             # funcionam no endpoint de transcrição da OpenAI e falhariam com 401 silencioso.
-            p_conf = Path.home() / ".meu-agente" / "config.json"
-            if p_conf.exists():
-                config_data = json.loads(p_conf.read_text(encoding="utf-8"))
-                if config_data.get("ai_provider") == "openai":
-                    openai_key = config_data.get("ai_api_key", "")
-                if openai_key and len(openai_key) > 30: # Evitar chaves curtas
-                    api_url = "https://api.openai.com/v1/audio/transcriptions"
-                    api_key = openai_key
-                    model = "whisper-1"
-                else:
-                    logger.warning("Nenhuma chave de Whisper (Groq/OpenAI) disponível.")
-                    return ""
+            if client_config.get("ai_provider") == "openai":
+                openai_key = client_config.get("ai_api_key", "")
+            if openai_key and len(openai_key) > 30:  # Evitar chaves curtas
+                api_url = "https://api.openai.com/v1/audio/transcriptions"
+                api_key = openai_key
+                model = "whisper-1"
             else:
-                logger.warning("Nenhuma chave de Whisper encontrada.")
+                logger.warning("Nenhuma chave de Whisper (Groq/OpenAI) disponível.")
                 return ""
             
         audio_data = base64.b64decode(base64_str)
@@ -1110,7 +1292,7 @@ def watch():
                     continue
 
                 try:
-                    response = handle_message(phone, name, text)
+                    response, media_requests = handle_message(phone, name, text)
                     if response:
                         if is_audio:
                             logger.info(f"📤 Gerando e enviando resposta em áudio para {phone}...")
@@ -1118,8 +1300,20 @@ def watch():
                             if not audio_success:
                                 # Fallback para texto se falhar
                                 send_whatsapp(phone, response)
+                            else:
+                                # Um link falado não dá pra clicar — se a resposta
+                                # tinha algum (ex: link de pagamento), manda também
+                                # por escrito logo em seguida, só com o(s) link(s).
+                                urls = URL_PATTERN.findall(response)
+                                if urls:
+                                    send_whatsapp(phone, "🔗 " + "\n".join(urls))
                         else:
                             send_whatsapp(phone, response)
+
+                        # Fotos/vídeos que a IA pediu pra mandar (tag [FOTO:.]/
+                        # [VIDEO:.] na resposta) vão depois do texto, uma de cada vez.
+                        for item in media_requests:
+                            send_whatsapp_media(phone, item["path"], item["mediatype"])
                     else:
                         logger.debug("⏭️  Não é trigger — ignorado")
                 except Exception as e:

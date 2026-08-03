@@ -469,7 +469,7 @@ def _process_message(phone: str, name: str, text: str, is_audio: bool):
         return
 
     try:
-        response = handle_message(phone, name, text)
+        response, media_requests = handle_message(phone, name, text)
         if not response:
             return
         if is_audio:
@@ -477,6 +477,11 @@ def _process_message(phone: str, name: str, text: str, is_audio: bool):
                 send_whatsapp(phone, response)
         else:
             send_whatsapp(phone, response)
+        # TODO: envio de foto/vídeo (tags [FOTO:.]/[VIDEO:.]) ainda não
+        # implementado no caminho Meta Cloud API — só no watcher.py (Evolution),
+        # que é o que está em produção pra Ágil. Ver seção 22 do SKILL.md.
+        if media_requests:
+            logger.warning(f"⚠️  {len(media_requests)} mídia(s) pedida(s) pela IA, mas envio de mídia ainda não existe no webhook_server (Meta API) — ignorado.")
     except Exception as e:
         logger.error(f"Erro ao processar {phone}: {e}\n{traceback.format_exc()}")
 

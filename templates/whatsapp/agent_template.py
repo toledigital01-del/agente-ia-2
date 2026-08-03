@@ -97,6 +97,34 @@ def extract_cep(text: str) -> str:
         return f"{match.group(1)}{match.group(2)}"
     return None
 
+_ESTADOS_BR = [
+    "Minas Gerais", "São Paulo", "Rio de Janeiro", "Rio Grande do Sul", "Rio Grande do Norte",
+    "Mato Grosso do Sul", "Mato Grosso", "Espírito Santo", "Santa Catarina", "Distrito Federal",
+    "Acre", "Alagoas", "Amapá", "Amazonas", "Bahia", "Ceará", "Goiás", "Maranhão", "Pará",
+    "Paraíba", "Paraná", "Pernambuco", "Piauí", "Rondônia", "Roraima", "Sergipe", "Tocantins",
+]
+_ESTADOS_PATTERN = re.compile(
+    "|".join(re.escape(e) for e in sorted(_ESTADOS_BR, key=len, reverse=True)), re.IGNORECASE
+)
+
+
+def _sanitize_regiao(texto: str) -> str:
+    """Remove nomes de estado do texto — usado na descrição de frete que vem da
+    Frenet, que às vezes cita a rota de origem/destino. Duas razões pra isso:
+    1) evita vazar o estado onde a empresa fica (regra de confidencialidade
+       industrial já existente no prompt);
+    2) o nome de estado dentro dessa descrição estava saindo esquisito quando
+       lido em voz alta pela IA (cliente reportou "bug" na pronúncia,
+       2026-08-03) — sem o nome do estado ali, a frase fica normal de falar."""
+    if not texto:
+        return texto
+    limpo = _ESTADOS_PATTERN.sub("", texto)
+    limpo = re.sub(r"\bpara\b", "", limpo, flags=re.IGNORECASE)  # sobra de "X para Y"
+    limpo = re.sub(r"\(\s*\)", "", limpo)  # parênteses que ficaram vazios
+    limpo = re.sub(r"\s{2,}", " ", limpo)
+    return limpo.strip(" -/,")
+
+
 def get_shipping_quote(recipient_cep: str, width_m: float, height_m: float, quantity: int = 1) -> dict:
     """Consulta frete na API da Frenet."""
     url = "https://api.frenet.com.br/shipping/quote"
@@ -159,6 +187,68 @@ CHECKOUT_LINK = client_config.get("checkout_link", "")
 # sem o backend ter gerado a URL real ainda — sinal de que ela decidiu
 # fechar a venda mesmo sem a frase do cliente bater com is_purchase_intent().
 LINK_PLACEHOLDER_PATTERN = re.compile(r"\[[^\]]{0,80}link[^\]]{0,80}\]", re.IGNORECASE)
+
+# ── Biblioteca de mídia (fotos/vídeos reais de produto) ─────────────────────
+# A IA pode escrever [FOTO: chave] ou [FOTO: chave:todas] ou [VIDEO: chave]
+# na resposta quando achar que uma foto/vídeo ajuda o lead a decidir — o
+# código abaixo detecta essas tags, remove do texto visível e resolve pros
+# arquivos reais em MEDIA_DIR/<chave>/. Catálogo e arquivos vêm de
+# 2026-08-02 (fotos reais de produto, passadas pelo cliente).
+MEDIA_DIR = client_config.CLIENT_DIR / "media"
+MEDIA_CATALOG_PATH = MEDIA_DIR / "catalog.json"
+FOTO_TAG_PATTERN = re.compile(r"\[\s*FOTO\s*:\s*([a-z0-9\-]+)(?:\s*:\s*(todas|\d+))?\s*\]", re.IGNORECASE)
+VIDEO_TAG_PATTERN = re.compile(r"\[\s*VIDEO\s*:\s*([a-z0-9\-]+)\s*\]", re.IGNORECASE)
+MAX_FOTOS_POR_ENVIO = 4
+
+
+def _load_media_catalog() -> dict:
+    try:
+        return json.loads(MEDIA_CATALOG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+MEDIA_CATALOG = _load_media_catalog()
+
+
+def extract_media_requests(response: str) -> tuple:
+    """Acha tags [FOTO: chave] / [VIDEO: chave] na resposta da IA, remove do
+    texto visível e retorna (texto_limpo, lista_de_arquivos_pra_enviar).
+    Cada item da lista é {"path": Path, "mediatype": "image"|"video"}.
+    Chave inválida (fora do catálogo) é apenas removida do texto, sem travar
+    o envio da resposta — a IA pode errar o nome da chave às vezes."""
+    media_files = []
+
+    def _resolver_foto(match):
+        key = match.group(1).lower()
+        qty_raw = match.group(2)
+        entry = MEDIA_CATALOG.get(key)
+        if not entry:
+            return ""
+        imagens = entry.get("images", [])
+        if qty_raw == "todas":
+            qty = len(imagens)
+        elif qty_raw:
+            qty = min(int(qty_raw), len(imagens))
+        else:
+            qty = 1
+        for nome_arquivo in imagens[:min(qty, MAX_FOTOS_POR_ENVIO)]:
+            media_files.append({"path": MEDIA_DIR / key / nome_arquivo, "mediatype": "image"})
+        return ""
+
+    def _resolver_video(match):
+        key = match.group(1).lower()
+        entry = MEDIA_CATALOG.get(key)
+        video_nome = entry.get("video") if entry else None
+        if video_nome:
+            media_files.append({"path": MEDIA_DIR / key / video_nome, "mediatype": "video"})
+        return ""
+
+    clean = FOTO_TAG_PATTERN.sub(_resolver_foto, response)
+    clean = VIDEO_TAG_PATTERN.sub(_resolver_video, clean)
+    clean = re.sub(r"[ \t]+\n", "\n", clean).strip()
+    return clean, media_files
+
 
 DB_PATH = str(client_config.DB_PATH)
 
@@ -320,7 +410,7 @@ def is_trigger(text: str) -> bool:
     return True
 
 
-def handle_message(phone: str, sender_name: str, text: str) -> str:
+def handle_message(phone: str, sender_name: str, text: str) -> tuple:
     """
     Processa mensagem e retorna resposta do agente com cálculos físicos e cotação de frete.
 
@@ -330,12 +420,14 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         text: Conteúdo da mensagem
 
     Returns:
-        Resposta do agente (ou None se não é trigger)
+        Tupla (resposta_texto, media_requests) — resposta_texto é None se não é trigger.
+        media_requests é uma lista de {"path": Path, "mediatype": "image"|"video"}
+        pra watcher.py enviar depois do texto.
     """
 
     # 1. Verificar trigger
     if not is_trigger(text):
-        return None
+        return None, []
 
     # 2. Criar/carregar lead
     lead_id = create_lead(phone, name=sender_name)
@@ -429,8 +521,8 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
         quote_res = get_shipping_quote(saved_cep, w_float, h_float)
         if "quotes" in quote_res and quote_res["quotes"]:
             best_quote = min(quote_res["quotes"], key=lambda q: q["price"])
-            carrier = best_quote["carrier"]
-            desc = best_quote["description"]
+            carrier = _sanitize_regiao(best_quote["carrier"])
+            desc = _sanitize_regiao(best_quote["description"])
             price = best_quote["price"]
             days = best_quote["days"]
             
@@ -462,13 +554,27 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
     # Rodar isso ANTES de salvar a resposta no histórico, pra nunca gravar
     # um texto diferente do que o cliente de fato recebeu.
     promised_link_without_url = bool(LINK_PLACEHOLDER_PATTERN.search(response))
-    if (is_purchase_intent(text, messages) or promised_link_without_url) and len(messages) >= 3:
+    saved_endereco = get_metadata(lead_id, "endereco")
+    if (is_purchase_intent(text, messages) or promised_link_without_url) and len(messages) >= 3 and not saved_endereco:
+        # Endereço completo ainda não foi coletado — NUNCA gerar/mandar o link
+        # de pagamento sem isso (protocolo anti-erro, etapa 6.5 do prompt).
+        # Isso é reforçado aqui no código porque a intenção de compra é
+        # detectada de forma independente do fluxo de etapas da IA — sem essa
+        # trava, o link podia sair antes do endereço ser pedido, se a IA
+        # "pulasse" a etapa por conta própria.
+        if promised_link_without_url:
+            response = LINK_PLACEHOLDER_PATTERN.sub("", response).rstrip()
+        if "endereço" not in response.lower() and "endereco" not in response.lower():
+            response += (
+                "\n\nAntes de gerar o link de pagamento, só preciso do endereço completo de entrega "
+                "— rua, número, complemento (se tiver) e bairro. Pode me passar?"
+            )
+    elif (is_purchase_intent(text, messages) or promised_link_without_url) and len(messages) >= 3:
         # Calcular preço dinâmico com base nas medidas e CEP salvos do lead
         saved_w = get_metadata(lead_id, "width")
         saved_h = get_metadata(lead_id, "height")
         saved_cep = get_metadata(lead_id, "cep")
         saved_cor = get_metadata(lead_id, "cor")
-        saved_endereco = get_metadata(lead_id, "endereco")
 
         total_price = 0.0
         if saved_w and saved_h:
@@ -537,14 +643,19 @@ def handle_message(phone: str, sender_name: str, text: str) -> str:
             response += f"\n\n{format_checkout_message(checkout_url)}"
         mark_checkout_sent(lead_id)
 
-    # 7. Adicionar resposta do agente (já com o link real, se houver)
+    # 6.5. Extrair tags [FOTO: chave] / [VIDEO: chave] que a IA tenha escrito
+    # e resolver pros arquivos reais — o texto salvo no histórico já fica
+    # limpo (sem a tag), igual já fazemos com o placeholder de link.
+    response, media_requests = extract_media_requests(response)
+
+    # 7. Adicionar resposta do agente (já com o link real, se houver, e sem tags de mídia)
     messages.append({"role": "assistant", "content": response})
     add_message(lead_id, "assistant", response)
 
     # 8. Salvar sessão
     save_session(lead_id, messages)
 
-    return response
+    return response, media_requests
 
 
 def test_trigger():
@@ -588,7 +699,7 @@ def main():
             if msg.lower() == "sair":
                 break
 
-            response = handle_message(
+            response, media_requests = handle_message(
                 phone=args.chat,
                 sender_name="Teste",
                 text=msg
@@ -596,6 +707,8 @@ def main():
 
             if response:
                 print(f"Agente: {response}\n")
+                for item in media_requests:
+                    print(f"  [enviaria {item['mediatype']}: {item['path']}]")
             else:
                 print("(Mensagem ignorada — não contém trigger)\n")
     else:

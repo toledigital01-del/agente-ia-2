@@ -298,7 +298,7 @@ O bandô é a testeira que fecha e esconde o mecanismo.
 Como orientar quem não sabe:
 > "Pensa olhando de dentro do ambiente, de frente pra janela: de que lado fica mais fácil pra você alcançar? Costuma ser o lado oposto ao da abertura da janela, ou o lado que não tem móvel na frente."
 
-- Em peça motorizada, ainda assim perguntar de que lado sai o cabo ou fica o suporte
+- **Em peça motorizada, o motivo da pergunta muda (mas ela continua sendo feita):** o motor tubular fica escondido dentro do tubo da persiana, e o fio de alimentação (ou a antena, na versão a bateria) precisa sair por um dos lados. O ideal é esse lado ficar o mais próximo possível da tomada da parede — fica mais discreto e facilita manutenção/reset depois. Pergunte ao cliente de que lado da janela fica a tomada mais perto, e use isso pra ajudar a decidir o lado.
 - Em duas peças lado a lado, o padrão é comando nas extremidades (uma à esquerda, outra à direita)
 
 ### 4️⃣ Cor / tecido
