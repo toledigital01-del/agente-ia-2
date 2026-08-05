@@ -438,6 +438,18 @@ def preprocess_text_for_tts(text: str) -> str:
 
     text = re.sub(r"\b(\d+)x\b(?!\d)", _vezes_replacer, text, flags=re.IGNORECASE)
 
+    # "16mm"/"25mm"/"50mm" (largura de lâmina da Persiana Horizontal Alumínio,
+    # usado no prompt de configuração) -- mesma classe de bug de "nº"/"6x"/"m²":
+    # número colado numa abreviação que o TTS não sabe ler. Confirmado ao vivo
+    # (cliente, 2026-08-03): "Horizontal Alumínio 20mm motorizada" saiu
+    # transcrito como "20 com make merit motorizada" -- ruído sem sentido.
+    def _mm_replacer(m):
+        n = int(m.group(1))
+        unidade = "milímetro" if n == 1 else "milímetros"
+        return f"{number_to_words(n)} {unidade}"
+
+    text = re.sub(r"\b(\d+)\s*mm\b", _mm_replacer, text, flags=re.IGNORECASE)
+
     # "cartão" (no contexto de parcelamento, ex: "sem juros no cartão") vira
     # "cartal"/"cartel" nessa voz -- bug real, confirmado ouvindo o áudio
     # gerado (cliente, 2026-08-03). Testei à exaustão pra achar outro jeito
