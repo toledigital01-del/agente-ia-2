@@ -403,6 +403,24 @@ def preprocess_text_for_tts(text: str) -> str:
     text = re.sub(r"^[ \t]*[-•]\s+", "", text, flags=re.MULTILINE)  # marcador de lista
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)      # cabeçalho markdown
 
+    # Emoji — a IA às vezes decora a mensagem de texto com emoji (💡, ✅, 📏
+    # etc.), e sem remover isso o TTS tenta "ler" o glifo, o que soa mal ou
+    # gera silêncio/ruído. Auditoria proativa (2026-08-05, pedido do cliente
+    # depois do bug do "mm") -- nenhum caso reproduzido ainda com emoji real,
+    # mas é o mesmo princípio do Markdown acima: símbolo decorativo bom pro
+    # texto do WhatsApp, ruim pra voz. Cobre os blocos Unicode de emoji mais
+    # comuns + variation selector/ZWJ (usados em emoji combinados).
+    _EMOJI_PATTERN = (
+        "[\U0001F300-\U0001FAFF"  # emoji principais (pictogramas, símbolos, etc.)
+        "☀-➿"           # símbolos diversos e dingbats (inclui ⚠ aviso)
+        "←-⇿"           # setas (inclui →)
+        "⬀-⯿"           # mais símbolos e setas
+        "️"                  # variation selector-16 (estiliza emoji)
+        "‍"                  # zero-width joiner (junta emoji combinados)
+        "]"
+    )
+    text = re.sub(_EMOJI_PATTERN, "", text)
+
     # Sigla de estado (UF) sozinha ou colada com barra/hífen costuma sair
     # errado ou embolada com a palavra anterior — troca pelo nome por extenso
     # (ex: "Florianópolis/SC" -> "Florianópolis, Santa Catarina").
